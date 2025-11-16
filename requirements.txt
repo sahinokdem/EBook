@@ -1,0 +1,25 @@
+# FastAPI ve ASGI server
+fastapi
+uvicorn[standard]
+
+# Database
+sqlalchemy
+psycopg2-binary
+alembic
+
+# Authentication & Security
+python-jose[cryptography]
+passlib
+argon2-cffi
+python-multipart
+
+# Environment variables
+python-dotenv
+
+# Validation
+email-validator
+
+# Utils
+python-dateutil
+
+pydantic-settings
