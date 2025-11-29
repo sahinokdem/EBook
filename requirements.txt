@@ -13,6 +13,16 @@ passlib
 argon2-cffi
 python-multipart
 
+# === PDF Processing ===
+PyMuPDF             # PDF parsing (fitz)
+# Alternatifler:
+# pdfplumber             # Daha basit PDF extraction
+# pypdf             # Lightweight PDF
+
+# === Async Task Queue ===
+celery             # Task queue
+redis               # Celery broker
+
 # Environment variables
 python-dotenv
 

@@ -1,13 +1,24 @@
+"""
+Book Service - Updated.
+
+Değişiklikler:
+- PDF saklanmıyor, sadece parse ediliyor
+- Upload sonrası Celery task tetikleniyor
+- Sync processing opsiyonu (development için)
+"""
+
 import os
-import shutil
-from pathlib import Path
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status, UploadFile
 
 from app.books import repository
 from app.books.schemas import BookCreate, BookListResponse
-from app.books.models import Book
+from app.books.models import Book, BookStatus
 from app.core.config import settings
+
+
+# Celery kullanılacak mı? (Development'ta False olabilir)
+USE_CELERY = os.getenv("USE_CELERY", "false").lower() == "true"
 
 
 def upload_book(
@@ -17,13 +28,24 @@ def upload_book(
     user_id: int
 ) -> Book:
     """
-    Book upload - File save + DB record.
+    Book upload - File validation + Parse işlemi başlat.
+    
+    Değişiklik: PDF artık saklanmıyor!
     
     Steps:
     1. File validation (size, type)
-    2. Create user upload directory
-    3. Save file to disk
-    4. Create DB record
+    2. Create DB record (status: PENDING)
+    3. Parse PDF (sync veya async)
+    4. Return book
+    
+    Args:
+        db: Database session
+        file: Uploaded file
+        book_data: Book metadata (title, author)
+        user_id: User ID
+    
+    Returns:
+        Book: Created book (status: PENDING veya COMPLETED)
     """
     
     # 1. File validation
@@ -33,60 +55,40 @@ def upload_book(
             detail=f"File too large. Maximum size: {settings.MAX_UPLOAD_SIZE / 1024 / 1024}MB"
         )
     
-    # Allowed file types (şimdilik sadece PDF ve EPUB)
-    allowed_types = ["application/pdf", "application/epub+zip"]
+    allowed_types = ["application/pdf"]
     if file.content_type not in allowed_types:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid file type. Allowed: PDF, EPUB"
+            detail="Invalid file type. Only PDF allowed."
         )
     
-    # 2. Create upload directory
-    user_upload_dir = Path(settings.UPLOAD_DIR) / f"user_{user_id}"
-    user_upload_dir.mkdir(parents=True, exist_ok=True)
+    # 2. File içeriğini oku (memory'de)
+    file_content = file.file.read()
     
-    """
-    Directory structure:
-    uploads/
-    ├── user_1/
-    │   ├── book_1.pdf
-    │   └── book_2.epub
-    └── user_2/
-        └── book_3.pdf
-    """
-    
-    # 3. Save file
-    file_path = user_upload_dir / file.filename
-    
-    # File already exists? Add timestamp
-    if file_path.exists():
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_stem = file_path.stem
-        file_suffix = file_path.suffix
-        file_path = user_upload_dir / f"{file_stem}_{timestamp}{file_suffix}"
-    
-    # Write file to disk
-    with file_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    """
-    shutil.copyfileobj():
-    - Efficient file copy (chunks)
-    - Memory-friendly (büyük dosyalar için)
-    """
-    
-    # 4. Create DB record
+    # 3. DB record oluştur (PENDING status)
     new_book = repository.create_book(
         db=db,
         title=book_data.title,
         author=book_data.author,
-        file_path=str(file_path),
         file_name=file.filename,
         file_size=file.size,
         file_type=file.content_type,
         user_id=user_id
     )
+    
+    # 4. PDF processing başlat
+    if USE_CELERY:
+        # Async processing (production)
+        from app.books.book_tasks import start_book_processing
+        task_id = start_book_processing(new_book.id, file_content)
+        # Task ID'yi saklamak istersen book modeline ekleyebilirsin
+    else:
+        # Sync processing (development)
+        from app.books.book_tasks import process_book_sync
+        result = process_book_sync(new_book.id, file_content, db)
+        
+        # Refresh book (status güncellenmiş olabilir)
+        db.refresh(new_book)
     
     return new_book
 
@@ -105,7 +107,6 @@ def get_book(db: Session, book_id: int, user_id: int) -> Book:
             detail="Book not found"
         )
     
-    # Authorization check
     if book.user_id != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -124,7 +125,6 @@ def list_user_books(
     """
     List user's books with pagination.
     """
-    # Validation
     if page < 1:
         page = 1
     if page_size < 1 or page_size > 100:
@@ -147,11 +147,8 @@ def delete_book(db: Session, book_id: int, user_id: int) -> None:
     """
     Delete book.
     
-    Steps:
-    1. Find book
-    2. Authorization check
-    3. Delete file from disk
-    4. Delete DB record
+    Değişiklik: File deletion yok artık (PDF saklanmıyor).
+    Cascade ile pages otomatik silinecek.
     """
     book = repository.get_book_by_id(db, book_id)
     
@@ -161,17 +158,35 @@ def delete_book(db: Session, book_id: int, user_id: int) -> None:
             detail="Book not found"
         )
     
-    # Authorization check
     if book.user_id != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to delete this book"
         )
     
-    # Delete file from disk
-    file_path = Path(book.file_path)
-    if file_path.exists():
-        file_path.unlink()
-    
-    # Delete DB record
+    # Delete DB record (cascade ile pages da silinir)
     repository.delete_book(db, book)
+
+
+def retry_processing(db: Session, book_id: int, user_id: int) -> Book:
+    """
+    Failed olan kitabı tekrar işle.
+    
+    Kullanım: Kitap FAILED durumundaysa tekrar denenebilir.
+    NOT: Bunun için original file lazım - şu anki tasarımda mümkün değil.
+    
+    İleride: Temporary storage eklenebilir.
+    """
+    book = get_book(db, book_id, user_id)
+    
+    if book.status != BookStatus.FAILED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only failed books can be retried"
+        )
+    
+    # Original file olmadığı için retry yapılamaz
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Cannot retry - original file not stored. Please upload again."
+    )

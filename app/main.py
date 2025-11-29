@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.books.page_router import router as page_router  
 from app.core.config import settings
 from app.users.router import router as users_router
 from app.books.router import router as books_router
@@ -105,6 +106,12 @@ Endpoints:
 - DELETE /api/v1/books/{book_id}
 """
 
+app.include_router(
+    page_router,
+    prefix="/api/v1/books",
+    tags=["Book Pages"]
+)
+
 
 # Root endpoint
 @app.get("/", tags=["Root"])
@@ -168,11 +175,6 @@ async def startup_event():
     print(f"📚 {settings.PROJECT_NAME}")
     print(f"🔗 Database: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'configured'}")
     print(f"📖 Docs: http://localhost:8000/docs")
-    
-    # Upload directory oluştur
-    import os
-    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-    print(f"📁 Upload directory: {settings.UPLOAD_DIR}")
 
 
 # Shutdown event
