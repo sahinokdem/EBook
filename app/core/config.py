@@ -1,17 +1,17 @@
+"""
+Config - Updated.
+
+Yeni ayarlar:
+- Celery (Redis)
+- PDF processing
+"""
+
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    """
-    Application settings - Environment variables'lardan otomatik okur.
-    
-    Pydantic Settings kullanmanın avantajları:
-    1. Type validation (int, bool, str otomatik parse eder)
-    2. .env dosyasından otomatik okur
-    3. IDE autocomplete desteği
-    4. Immutable (güvenli)
-    """
+    """Application settings."""
     
     # Database
     DATABASE_URL: str
@@ -27,33 +27,27 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     
     # File Upload
-    UPLOAD_DIR: str = "./uploads"
     MAX_UPLOAD_SIZE: int = 52428800  # 50MB
     
+    # Celery / Redis
+    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+    USE_CELERY: bool = False  # Development'ta False
+    
+    # PDF Processing
+    PDF_MAX_PAGES: int = 1000  # Maksimum sayfa limiti
+    PDF_HEADING_H1_SIZE: float = 18.0
+    PDF_HEADING_H2_SIZE: float = 14.0
+    PDF_HEADING_H3_SIZE: float = 12.0
+    
     class Config:
-        """
-        Pydantic config - .env dosyasını otomatik okur.
-        case_sensitive=False → büyük/küçük harf farketmez
-        """
         env_file = ".env"
         case_sensitive = False
 
 
 @lru_cache()
 def get_settings() -> Settings:
-    """
-    Settings singleton - Sadece bir kez oluşturulur.
-    
-    @lru_cache() decorator sayesinde:
-    - İlk çağrıda Settings() create edilir
-    - Sonraki çağrılarda cache'den döner (performans)
-    - Memory efficient
-    
-    Returns:
-        Settings: Application settings instance
-    """
     return Settings()
 
 
-# Kolayca import etmek için
 settings = get_settings()

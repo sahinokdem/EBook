@@ -1,14 +1,31 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.shared.database import Base
+import enum
+
+
+class BookStatus(str, enum.Enum):
+    """
+    Kitap işleme durumu.
+    
+    Upload → Processing → Completed/Failed
+    """
+    PENDING = "pending"          # Upload edildi, parse bekleniyor
+    PROCESSING = "processing"    # Parse ediliyor
+    COMPLETED = "completed"      # Parse tamamlandı, okunabilir
+    FAILED = "failed"            # Parse başarısız
 
 
 class Book(Base):
     """
-    Book model - Database'deki 'books' tablosunu temsil eder.
+    Book model - Güncellendi.
     
-    Her kitap bir user'a aittir (Many-to-One relationship)
+    Değişiklikler:
+    - file_path kaldırıldı (PDF saklanmayacak)
+    - status eklendi (parse durumu)
+    - total_pages eklendi
+    - pages relationship eklendi
     """
     
     __tablename__ = "books"
@@ -18,94 +35,130 @@ class Book(Base):
     
     # Book metadata
     title = Column(String(500), nullable=False, index=True)
-    """
-    index=True: Title ile arama yapmak için (search functionality)
-    String(500): Uzun kitap isimleri için
-    """
-    
     author = Column(String(255), nullable=True)
-    """
-    nullable=True: Author bilinmeyebilir (opsiyonel)
-    """
     
-    # File information
-    file_path = Column(String(1000), nullable=False)
-    """
-    File'ın server'da nerede saklandığı
-    Örnek: "uploads/user_123/book_456.pdf"
-    String(1000): Uzun path'ler için yeterli
-    """
-    
+    # File information (original file info - referans için)
     file_name = Column(String(500), nullable=False)
-    """
-    Original file name (user'ın upload ettiği isim)
-    Örnek: "Harry Potter and the Philosopher's Stone.pdf"
-    """
+    """Original dosya adı (gösterim için)"""
     
-    file_size = Column(BigInteger, nullable=False)
-    """
-    BigInteger: Büyük dosyalar için (bytes cinsinden)
-    Örnek: 52428800 (50MB)
-    """
+    file_size = Column(Integer, nullable=False)
+    """Original dosya boyutu (bytes)"""
     
     file_type = Column(String(50), nullable=False)
+    """MIME type: application/pdf"""
+    
+    # Processing status
+    status = Column(
+        Enum(BookStatus), 
+        default=BookStatus.PENDING, 
+        nullable=False,
+        index=True
+    )
     """
-    MIME type veya extension
-    Örnek: "application/pdf", "epub", etc.
+    Parse durumu:
+    - PENDING: Henüz parse edilmedi
+    - PROCESSING: Parse ediliyor
+    - COMPLETED: Tamamlandı
+    - FAILED: Hata oluştu
     """
     
-    # Foreign Key - Bu kitap hangi user'a ait?
+    error_message = Column(Text, nullable=True)
+    """Parse hatası varsa mesajı"""
+    
+    # Page info
+    total_pages = Column(Integer, nullable=True)
+    """Toplam sayfa sayısı (parse sonrası set edilir)"""
+    
+    # Foreign Key
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    """
-    ForeignKey("users.id"): users tablosundaki id column'una referans
-    index=True: user_id ile arama hızlı olur
-    
-    Foreign Key nedir?
-    - İki tablo arasında ilişki kurar
-    - Referential integrity sağlar (orphan records olmaz)
-    - user_id, users.id'de olmayan bir değer olamaz
-    """
     
     # Timestamps
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    """
-    Book ne zaman upload edildi?
-    server_default=func.now(): Upload anında otomatik set edilir
-    """
-    
     updated_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False
     )
-    """
-    Book metadata'sı ne zaman güncellendi?
-    Örnek: Title değiştirildiğinde updated_at güncellenir
-    """
     
-    # Relationship - Book'un owner'ı (Many-to-One)
+    # Relationships
     owner = relationship("User", back_populates="books")
+    pages = relationship(
+        "BookPage", 
+        back_populates="book", 
+        cascade="all, delete-orphan",
+        order_by="BookPage.page_number"
+    )
     """
-    relationship() - Python tarafında ilişki
-    
-    book.owner → Bu kitabın sahibi olan User object'i
-    Örnek:
-        book = Book.query.first()
-        print(book.owner.email)  # User'ın email'i
-    
-    back_populates="books": User model'deki 'books' ile eşleşir
-    
-    Many-to-One nedir?
-    - Birçok book → Bir user'a ait olabilir
-    - Bir user → Birçok book'a sahip olabilir
+    Book silinince tüm sayfaları da silinir (cascade)
+    Sayfalar page_number'a göre sıralı gelir
     """
     
     def __repr__(self) -> str:
-        """
-        Object'in string representation'ı
-        
-        Returns:
-            str: Book(id=1, title='...', owner_id=5)
-        """
-        return f"Book(id={self.id}, title='{self.title}', user_id={self.user_id})"
+        return f"Book(id={self.id}, title='{self.title}', status={self.status})"
+
+
+class BookPage(Base):
+    """
+    BookPage model - Kitap sayfalarını saklar.
+    
+    Her sayfa:
+    - PDF'in bir sayfasına karşılık gelir
+    - HTML formatında içerik tutar
+    - Formatting korunur (başlık, paragraf, bold, vb.)
+    """
+    
+    __tablename__ = "book_pages"
+    
+    # Primary Key
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Foreign Key - Hangi kitaba ait?
+    book_id = Column(Integer, ForeignKey("books.id"), nullable=False, index=True)
+    """
+    index=True: Kitabın sayfalarını hızlı çekmek için
+    """
+    
+    # Page info
+    page_number = Column(Integer, nullable=False)
+    """
+    Sayfa numarası (1'den başlar)
+    PDF'deki sayfa sırasına karşılık gelir
+    """
+    
+    # Content
+    content = Column(Text, nullable=False)
+    """
+    Sayfa içeriği - HTML formatında.
+    
+    Örnek:
+    <h1>Bölüm 1: Giriş</h1>
+    <p>Bu kitap <strong>Python</strong> programlama dilini...</p>
+    <p>İkinci paragraf burada devam eder.</p>
+    
+    Neden HTML?
+    - Zengin formatting desteği
+    - Frontend'de direkt render edilebilir
+    - Başlık, paragraf, bold, italic korunur
+    """
+    
+    # Metadata
+    word_count = Column(Integer, nullable=False, default=0)
+    """Sayfadaki kelime sayısı (okuma süresi hesabı için)"""
+    
+    char_count = Column(Integer, nullable=False, default=0)
+    """Karakter sayısı"""
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    
+    # Relationship
+    book = relationship("Book", back_populates="pages")
+    
+    # Composite unique constraint - Aynı kitapta aynı sayfa numarası olamaz
+    __table_args__ = (
+        # UniqueConstraint('book_id', 'page_number', name='uq_book_page'),
+    )
+    
+    def __repr__(self) -> str:
+        return f"BookPage(book_id={self.book_id}, page={self.page_number}, words={self.word_count})"
