@@ -1,5 +1,4 @@
 services:
-  # PostgreSQL Database
   - type: pserv
     name: ebook-db
     env: docker
@@ -9,14 +8,13 @@ services:
       - name: ebook
         user: ebook_user
 
-  # FastAPI Web Service
   - type: web
     name: ebook-api
     env: python
     region: frankfurt
     plan: free
-    buildCommand: "pip install -r requirements.txt && alembic upgrade head"
-    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "bash -c 'alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT'"
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
