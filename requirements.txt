@@ -19,6 +19,11 @@ PyMuPDF             # PDF parsing (fitz)
 # pdfplumber             # Daha basit PDF extraction
 # pypdf             # Lightweight PDF
 
+# === EPUB Processing ===
+ebooklib            # EPUB parsing
+beautifulsoup4      # HTML parsing
+lxml                # HTML parser backend
+
 # === Async Task Queue ===
 celery             # Task queue
 redis               # Celery broker
