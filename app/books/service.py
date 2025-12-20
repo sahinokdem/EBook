@@ -55,11 +55,14 @@ def upload_book(
             detail=f"File too large. Maximum size: {settings.MAX_UPLOAD_SIZE / 1024 / 1024}MB"
         )
     
-    allowed_types = ["application/pdf"]
-    if file.content_type not in allowed_types:
+    # Desteklenen dosya tipleri: PDF ve EPUB
+    from app.books.parser import BookParser
+    
+    if not BookParser.is_supported(file.content_type):
+        supported_types = ", ".join(BookParser.get_supported_types())
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid file type. Only PDF allowed."
+            detail=f"Invalid file type. Supported types: {supported_types}"
         )
     
     # 2. File içeriğini oku (memory'de)
@@ -80,12 +83,12 @@ def upload_book(
     if USE_CELERY:
         # Async processing (production)
         from app.books.book_tasks import start_book_processing
-        task_id = start_book_processing(new_book.id, file_content)
+        task_id = start_book_processing(new_book.id, file_content, file.content_type)
         # Task ID'yi saklamak istersen book modeline ekleyebilirsin
     else:
         # Sync processing (development)
         from app.books.book_tasks import process_book_sync
-        result = process_book_sync(new_book.id, file_content, db)
+        result = process_book_sync(new_book.id, file_content, file.content_type, db)
         
         # Refresh book (status güncellenmiş olabilir)
         db.refresh(new_book)

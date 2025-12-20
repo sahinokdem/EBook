@@ -29,15 +29,19 @@ async def upload_book(
     - title: Book title
     - author: Book author (optional)
     
+    Supported formats:
+    - PDF (application/pdf)
+    - EPUB (application/epub+zip)
+    
     Response (201 Created):
     ```json
     {
         "id": 1,
         "title": "Harry Potter",
         "author": "J.K. Rowling",
-        "file_name": "harry_potter.pdf",
+        "file_name": "harry_potter.epub",
         "file_size": 5242880,
-        "file_type": "application/pdf",
+        "file_type": "application/epub+zip",
         "user_id": 1,
         "uploaded_at": "2024-11-15T19:30:00Z"
     }

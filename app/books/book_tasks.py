@@ -67,15 +67,16 @@ celery_app.conf.update(
 # ============================================
 
 @celery_app.task(bind=True, max_retries=3)
-def process_book_task(self, book_id: int, file_content_base64: str) -> dict:
+def process_book_task(self, book_id: int, file_content_base64: str, file_type: str) -> dict:
     """
-    PDF'i parse et ve sayfaları DB'ye kaydet.
+    Book'u parse et ve sayfaları DB'ye kaydet (PDF veya EPUB).
     
     Celery task - background'da çalışır.
     
     Args:
         book_id: Book ID
-        file_content_base64: PDF içeriği (base64 encoded)
+        file_content_base64: File içeriği (base64 encoded)
+        file_type: MIME type (application/pdf, application/epub+zip)
     
     Returns:
         dict: İşlem sonucu
@@ -90,7 +91,7 @@ def process_book_task(self, book_id: int, file_content_base64: str) -> dict:
         Retry: İşlem başarısız olursa retry
     """
     from app.shared.database import SessionLocal
-    from app.books.pdf_parser import pdf_parser
+    from app.books.parser import BookParser
     from app.books import page_repository
     
     # Database session
@@ -103,8 +104,8 @@ def process_book_task(self, book_id: int, file_content_base64: str) -> dict:
         # 2. Base64'ten bytes'a çevir
         file_content = base64.b64decode(file_content_base64)
         
-        # 3. PDF'i parse et
-        result = pdf_parser.parse_file(file_content)
+        # 3. Book'u parse et (PDF veya EPUB)
+        result = BookParser.parse(file_content, file_type)
         
         if not result.success:
             # Parse başarısız
@@ -158,13 +159,14 @@ def process_book_task(self, book_id: int, file_content_base64: str) -> dict:
 # Helper Functions
 # ============================================
 
-def start_book_processing(book_id: int, file_content: bytes) -> str:
+def start_book_processing(book_id: int, file_content: bytes, file_type: str) -> str:
     """
     Book processing task'ını başlat.
     
     Args:
         book_id: Book ID
-        file_content: PDF içeriği (bytes)
+        file_content: File içeriği (bytes)
+        file_type: MIME type (application/pdf, application/epub+zip)
     
     Returns:
         str: Celery task ID
@@ -173,7 +175,7 @@ def start_book_processing(book_id: int, file_content: bytes) -> str:
     file_content_base64 = base64.b64encode(file_content).decode('utf-8')
     
     # Task'ı başlat
-    task = process_book_task.delay(book_id, file_content_base64)
+    task = process_book_task.delay(book_id, file_content_base64, file_type)
     
     return task.id
 
@@ -213,29 +215,30 @@ def get_task_status(task_id: str) -> dict:
 # Sync Processing (Celery olmadan test için)
 # ============================================
 
-def process_book_sync(book_id: int, file_content: bytes, db) -> dict:
+def process_book_sync(book_id: int, file_content: bytes, file_type: str, db) -> dict:
     """
-    PDF'i senkron olarak işle (test için).
+    Book'u senkron olarak işle (test için - PDF veya EPUB).
     
     Celery kurulu değilse veya development ortamında kullanılabilir.
     
     Args:
         book_id: Book ID
-        file_content: PDF içeriği
+        file_content: File içeriği
+        file_type: MIME type (application/pdf, application/epub+zip)
         db: Database session
     
     Returns:
         dict: İşlem sonucu
     """
-    from app.books.pdf_parser import pdf_parser
+    from app.books.parser import BookParser
     from app.books import page_repository
     
     try:
         # 1. Book'u PROCESSING durumuna al
         page_repository.set_book_processing(db, book_id)
         
-        # 2. PDF'i parse et
-        result = pdf_parser.parse_file(file_content)
+        # 2. Book'u parse et (PDF veya EPUB)
+        result = BookParser.parse(file_content, file_type)
         
         if not result.success:
             page_repository.set_book_failed(db, book_id, result.error_message)
