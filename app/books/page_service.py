@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 from typing import Optional
 
-from app.books.models import Book, BookPage, BookStatus
+from app.books.models import Book, BookBlock, BookStatus
 from app.books import repository as book_repository
 from app.books import page_repository
 from app.books.page_schemas import (

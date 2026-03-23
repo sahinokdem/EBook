@@ -185,6 +185,49 @@ class GeminiRAGService:
         )
         return (response.text or "").strip()
 
+    def translate_block_with_context(
+        self,
+        *,
+        current_text: str,
+        prev_text: str,
+        next_text: str,
+        target_lang: str,
+    ) -> str:
+        """Sliding-window bağlamıyla tek blok çevirisi yapar."""
+        if self._model is None:
+            raise RuntimeError("Gemini API key is not configured")
+
+        prompt = f"""You are an expert book translator.
+            Your task is to translate ONLY the text provided inside the <CURRENT_BLOCK> into {target_lang}.
+
+            RULES:
+            1. STRICTLY translate ONLY the text inside the <CURRENT_BLOCK> tags. Do NOT summarize. Translate word-for-word, keeping every single sentence.
+            2. The <PREVIOUS_BLOCK> and <NEXT_BLOCK> are provided ONLY for context. DO NOT translate them.
+            3. GIBBERISH RULE: If the <CURRENT_BLOCK> consists of meaningless characters, broken font artifacts, or gibberish (e.g., "TŔő SŏŕőŚŏő śŒ"), DO NOT try to guess or hallucinate a translation. Return an empty string.
+
+            <PREVIOUS_BLOCK>
+            {prev_text}
+            </PREVIOUS_BLOCK>
+
+            <CURRENT_BLOCK>
+            {current_text}
+            </CURRENT_BLOCK>
+
+            <NEXT_BLOCK>
+            {next_text}
+            </NEXT_BLOCK>
+
+            Translation:"""
+
+        response = self._model.generate_content(
+            prompt,
+            generation_config={
+                "temperature": 0.2,
+                "max_output_tokens": settings.GEMINI_MAX_TOKENS,
+            },
+        )
+        return (response.text or "").strip()
+
 
 vector_db_service = VectorDBService()
 gemini_rag_service = GeminiRAGService()
