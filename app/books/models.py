@@ -83,32 +83,37 @@ class Book(Base):
     
     # Relationships
     owner = relationship("User", back_populates="books")
-    pages = relationship(
-        "BookPage", 
+    blocks = relationship(
+        "BookBlock",
         back_populates="book", 
         cascade="all, delete-orphan",
-        order_by="BookPage.page_number"
+        order_by="BookBlock.page_number, BookBlock.block_index"
     )
     """
-    Book silinince tüm sayfaları da silinir (cascade)
-    Sayfalar page_number'a göre sıralı gelir
+    Book silinince tüm blokları da silinir (cascade)
+    Bloklar page_number ve block_index'e göre sıralı gelir
     """
+
+    @property
+    def pages(self):
+        """Geriye dönük uyumluluk için pages alias."""
+        return self.blocks
     
     def __repr__(self) -> str:
         return f"Book(id={self.id}, title='{self.title}', status={self.status})"
 
 
-class BookPage(Base):
+class BookBlock(Base):
     """
-    BookPage model - Kitap sayfalarını saklar.
-    
-    Her sayfa:
-    - PDF'in bir sayfasına karşılık gelir
-    - HTML formatında içerik tutar
-    - Formatting korunur (başlık, paragraf, bold, vb.)
+    BookBlock model - Kitap içerik bloklarını saklar.
+
+    Her blok:
+    - Belirli bir sayfaya aittir
+    - Sayfa içindeki sıra bilgisini (block_index) taşır
+    - RAG için vector_id ile vector DB kaydıyla eşleşir
     """
-    
-    __tablename__ = "book_pages"
+
+    __tablename__ = "book_blocks"
     
     # Primary Key
     id = Column(Integer, primary_key=True, index=True)
@@ -119,28 +124,23 @@ class BookPage(Base):
     index=True: Kitabın sayfalarını hızlı çekmek için
     """
     
-    # Page info
+    # Position info
     page_number = Column(Integer, nullable=False)
     """
     Sayfa numarası (1'den başlar)
-    PDF'deki sayfa sırasına karşılık gelir
     """
+
+    block_index = Column(Integer, nullable=False)
+    """Sayfa içindeki blok sırası (0'dan başlar)."""
     
     # Content
     content = Column(Text, nullable=False)
     """
-    Sayfa içeriği - HTML formatında.
-    
-    Örnek:
-    <h1>Bölüm 1: Giriş</h1>
-    <p>Bu kitap <strong>Python</strong> programlama dilini...</p>
-    <p>İkinci paragraf burada devam eder.</p>
-    
-    Neden HTML?
-    - Zengin formatting desteği
-    - Frontend'de direkt render edilebilir
-    - Başlık, paragraf, bold, italic korunur
+    Blok metni (text). RAG retrieval için normalize içerik tutulur.
     """
+
+    vector_id = Column(String(64), nullable=True, unique=True, index=True)
+    """Qdrant point ID eşleşmesi için UUID/string id."""
     
     # Metadata
     word_count = Column(Integer, nullable=False, default=0)
@@ -153,12 +153,14 @@ class BookPage(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     
     # Relationship
-    book = relationship("Book", back_populates="pages")
-    
-    # Composite unique constraint - Aynı kitapta aynı sayfa numarası olamaz
-    __table_args__ = (
-        # UniqueConstraint('book_id', 'page_number', name='uq_book_page'),
-    )
+    book = relationship("Book", back_populates="blocks")
     
     def __repr__(self) -> str:
-        return f"BookPage(book_id={self.book_id}, page={self.page_number}, words={self.word_count})"
+        return (
+            f"BookBlock(book_id={self.book_id}, page={self.page_number}, "
+            f"block={self.block_index}, words={self.word_count})"
+        )
+
+
+# Geriye dönük uyumluluk (eski importlar için)
+BookPage = BookBlock

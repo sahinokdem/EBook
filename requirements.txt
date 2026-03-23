@@ -1,3 +1,10 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# === Core AI & ML (CPU Only) ===
+torch
+torchvision
+torchaudio
+
 # FastAPI ve ASGI server
 fastapi
 uvicorn[standard]
@@ -16,7 +23,7 @@ python-multipart
 # === PDF Processing ===
 PyMuPDF             # PDF parsing (fitz)
 # Alternatifler:
-# pdfplumber             # Daha basit PDF extraction
+# pdfplumber        # Daha basit PDF extraction
 # pypdf             # Lightweight PDF
 
 # === EPUB Processing ===
@@ -25,8 +32,13 @@ beautifulsoup4      # HTML parsing
 lxml                # HTML parser backend
 
 # === Async Task Queue ===
-celery             # Task queue
+celery              # Task queue
 redis               # Celery broker
+
+# === RAG / Vector DB ===
+qdrant-client
+sentence-transformers
+google-generativeai
 
 # Environment variables
 python-dotenv
@@ -36,5 +48,4 @@ email-validator
 
 # Utils
 python-dateutil
-
 pydantic-settings

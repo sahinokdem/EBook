@@ -93,6 +93,8 @@ def process_book_task(self, book_id: int, file_content_base64: str, file_type: s
     from app.shared.database import SessionLocal
     from app.books.parser import BookParser
     from app.books import page_repository
+    from app.books import repository as book_repository
+    from app.core.vector_db import vector_db_service
     
     # Database session
     db = SessionLocal()
@@ -116,27 +118,44 @@ def process_book_task(self, book_id: int, file_content_base64: str, file_type: s
                 "error": result.error_message
             }
         
-        # 4. Sayfaları DB'ye kaydet
-        pages_data = [
+        # 4. Blokları hazırla
+        blocks_data = [
             {
-                "page_number": page.page_number,
-                "content": page.content,
-                "word_count": page.word_count,
-                "char_count": page.char_count
+                "page_number": block.page_number,
+                "block_index": getattr(block, "block_index", index),
+                "content": block.content,
+                "word_count": block.word_count,
+                "char_count": block.char_count,
             }
-            for page in result.pages
+            for index, block in enumerate(result.pages)
         ]
+
+        # Book owner (payload filter için)
+        book = book_repository.get_book_by_id(db, book_id)
+        if not book:
+            raise ValueError("Book not found during processing")
+
+        # 5. Vector DB'ye indexle
+        vector_ids = vector_db_service.index_blocks(
+            book_id=book_id,
+            user_id=book.user_id,
+            blocks=blocks_data,
+        )
+        for idx, vector_id in enumerate(vector_ids):
+            blocks_data[idx]["vector_id"] = vector_id
+
+        # 6. Blokları DB'ye kaydet
+        page_repository.create_book_blocks(db, book_id, blocks_data)
         
-        page_repository.create_book_pages(db, book_id, pages_data)
-        
-        # 5. Book'u COMPLETED durumuna al
+        # 7. Book'u COMPLETED durumuna al
         page_repository.set_book_completed(db, book_id, result.total_pages)
         
         return {
             "success": True,
             "book_id": book_id,
             "total_pages": result.total_pages,
-            "message": f"Successfully processed {result.total_pages} pages"
+            "total_blocks": result.total_pages,
+            "message": f"Successfully processed {result.total_pages} blocks"
         }
         
     except Exception as e:
@@ -216,66 +235,62 @@ def get_task_status(task_id: str) -> dict:
 # ============================================
 
 def process_book_sync(book_id: int, file_content: bytes, file_type: str, db) -> dict:
-    """
-    Book'u senkron olarak işle (test için - PDF veya EPUB).
-    
-    Celery kurulu değilse veya development ortamında kullanılabilir.
-    
-    Args:
-        book_id: Book ID
-        file_content: File içeriği
-        file_type: MIME type (application/pdf, application/epub+zip)
-        db: Database session
-    
-    Returns:
-        dict: İşlem sonucu
-    """
     from app.books.parser import BookParser
     from app.books import page_repository
+    from app.core.vector_db import vector_db_service
+    from app.books.models import Book
+    import uuid
     
     try:
-        # 1. Book'u PROCESSING durumuna al
+        # 1. Kitap ve User bilgisini al
+        book = db.query(Book).filter(Book.id == book_id).first()
+        if not book:
+            raise Exception("Book not found in database")
+
+        # 2. Book'u PROCESSING durumuna al
         page_repository.set_book_processing(db, book_id)
         
-        # 2. Book'u parse et (PDF veya EPUB)
+        # 3. Book'u parse et
         result = BookParser.parse(file_content, file_type)
         
         if not result.success:
             page_repository.set_book_failed(db, book_id, result.error_message)
-            return {
-                "success": False,
-                "book_id": book_id,
-                "error": result.error_message
-            }
+            return {"success": False, "book_id": book_id, "error": result.error_message}
         
-        # 3. Sayfaları DB'ye kaydet
-        pages_data = [
-            {
+        # 4. Blokları PostgreSQL ve Qdrant için hazırla
+        blocks_data = []
+        for i, page in enumerate(result.pages):
+            blocks_data.append({
                 "page_number": page.page_number,
+                "block_index": getattr(page, "block_index", i), # EPUB için fallback
                 "content": page.content,
                 "word_count": page.word_count,
-                "char_count": page.char_count
-            }
-            for page in result.pages
-        ]
+                "char_count": page.char_count,
+                "vector_id": str(uuid.uuid4()) # Qdrant ve DB eşleşmesi için eşsiz ID
+            })
         
-        page_repository.create_book_pages(db, book_id, pages_data)
+        # 5. PostgreSQL'e kaydet
+        page_repository.create_book_pages(db, book_id, blocks_data)
+
+        # 6. YAPAY ZEKA İÇİN QDRANT'A KAYDET (SİHRİN OLDUĞU YER)
+        if blocks_data:
+            vector_db_service.index_blocks(
+                book_id=book_id,
+                user_id=book.user_id,
+                blocks=blocks_data
+            )
         
-        # 4. Book'u COMPLETED durumuna al
+        # 7. Book'u COMPLETED durumuna al
         page_repository.set_book_completed(db, book_id, result.total_pages)
         
         return {
             "success": True,
             "book_id": book_id,
             "total_pages": result.total_pages,
-            "message": f"Successfully processed {result.total_pages} pages"
+            "message": f"Successfully processed and indexed {len(blocks_data)} blocks"
         }
         
     except Exception as e:
         error_msg = str(e)
         page_repository.set_book_failed(db, book_id, error_msg)
-        return {
-            "success": False,
-            "book_id": book_id,
-            "error": error_msg
-        }
+        return {"success": False, "book_id": book_id, "error": error_msg}
