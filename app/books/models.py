@@ -93,6 +93,8 @@ class Book(Base):
     Book silinince tüm blokları da silinir (cascade)
     Bloklar page_number ve block_index'e göre sıralı gelir
     """
+    glossary = relationship("BookGlossary", back_populates="book",
+                             uselist=False, cascade="all, delete-orphan")
 
     @property
     def pages(self):
@@ -154,6 +156,8 @@ class BookBlock(Base):
     
     # Relationship
     book = relationship("Book", back_populates="blocks")
+    translations = relationship("TranslatedBlock", back_populates="block",
+                                 cascade="all, delete-orphan")
     
     def __repr__(self) -> str:
         return (
@@ -161,6 +165,39 @@ class BookBlock(Base):
             f"block={self.block_index}, words={self.word_count})"
         )
 
+class BookGlossary(Base):
+    """
+    Kitaba ait terimce (sözlük) tablosu.
+    AI'ın çevirilerde tutarlı olması için (örn: team = takım) kullanılır.
+    """
+    __tablename__ = "book_glossaries"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    book_id = Column(Integer, ForeignKey("books.id", ondelete="CASCADE"), nullable=False, unique=True)
+    
+    glossary_json = Column(Text, nullable=False, default="{}")
+    """JSON formatında terimler: '{"team": "takım", "Aithor": "Aithor"}'"""
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    
+    book = relationship("Book", back_populates="glossary")
 
-# Geriye dönük uyumluluk (eski importlar için)
-BookPage = BookBlock
+
+class TranslatedBlock(Base):
+    """
+    Çevirisi yapılmış blokların önbellek (cache) tablosu.
+    Aynı sayfa tekrar çevrilmek istendiğinde API'ye gitmemek için kullanılır.
+    """
+    __tablename__ = "translated_blocks"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    block_id = Column(Integer, ForeignKey("book_blocks.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    target_language = Column(String(10), nullable=False, index=True, default="tr")
+    """Hedef dil kodu (örn: 'tr', 'en')"""
+    
+    translated_content = Column(Text, nullable=False)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    
+    block = relationship("BookBlock", back_populates="translations")
