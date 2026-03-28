@@ -9,14 +9,48 @@ services:
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
-        value: "postgresql://ebook_user:Rgs7UULeLrFoIrR2th6LttgKhPhtkrNM@dpg-d59rts75r7bs739f8dn0-a.frankfurt-postgres.render.com/ebook_cwfp"
+        sync: false
       - key: JWT_SECRET_KEY
-        generateValue: true
+        sync: false
       - key: JWT_ALGORITHM
         value: HS256
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
         value: 30
-      - key: UPLOAD_DIR
-        value: /tmp/uploads
+      - key: DEBUG
+        value: "false"
+      - key: USE_CELERY
+        value: "false"
+      - key: API_V1_PREFIX
+        value: /api/v1
+      - key: PROJECT_NAME
+        value: eBook API
       - key: MAX_UPLOAD_SIZE
         value: 52428800
+      - key: PDF_MAX_PAGES
+        value: 1000
+
+      # Gemini (AI features)
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.1-flash-lite-preview
+      - key: GEMINI_TEMPERATURE
+        value: "0.7"
+      - key: GEMINI_MAX_TOKENS
+        value: 8192
+
+      # Qdrant (RAG)
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_COLLECTION_NAME
+        value: ebook_blocks
+      - key: EMBEDDING_MODEL_NAME
+        value: sentence-transformers/all-MiniLM-L6-v2
+
+      # Celery vars (only required if USE_CELERY=true)
+      - key: CELERY_BROKER_URL
+        sync: false
+      - key: CELERY_RESULT_BACKEND
+        sync: false
