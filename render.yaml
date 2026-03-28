@@ -4,10 +4,14 @@ services:
     env: python
     region: frankfurt
     plan: free
-    buildCommand: "pip install -r requirements.txt && alembic upgrade head"
-    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    # Build aşamasında sadece paketleri kuruyoruz
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
+    # Start aşamasında önce DB'yi güncelleyip sonra API'yi açıyoruz
+    startCommand: "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /health
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.2 # [cite: 2026-03-28]
       - key: DATABASE_URL
         sync: false
       - key: JWT_SECRET_KEY
@@ -29,17 +33,17 @@ services:
       - key: PDF_MAX_PAGES
         value: 1000
 
-      # Gemini (AI features)
+      # Gemini
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
         value: gemini-3.1-flash-lite-preview
       - key: GEMINI_TEMPERATURE
-        value: "0.7"
+        value: "0.4"
       - key: GEMINI_MAX_TOKENS
         value: 8192
 
-      # Qdrant (RAG)
+      # Qdrant
       - key: QDRANT_URL
         sync: false
       - key: QDRANT_API_KEY
@@ -48,9 +52,3 @@ services:
         value: ebook_blocks
       - key: EMBEDDING_MODEL_NAME
         value: sentence-transformers/all-MiniLM-L6-v2
-
-      # Celery vars (only required if USE_CELERY=true)
-      - key: CELERY_BROKER_URL
-        sync: false
-      - key: CELERY_RESULT_BACKEND
-        sync: false
