@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 from typing import Optional, List
 from types import SimpleNamespace
-from app.books.models import Book, BookBlock, BookStatus, TranslatedBlock
+from app.books.models import Book, BookBlock, BookGlossary, BookStatus, TranslatedBlock
 
 
 # ============================================
@@ -384,3 +384,25 @@ def create_translated_block(
     db.commit()
     db.refresh(new_item)
     return new_item
+
+def create_book_glossary(db: Session, book_id: int, glossary_json: str) -> BookGlossary:
+    """Kitap glossary kaydını oluşturur ya da günceller."""
+    existing = db.query(BookGlossary).filter(BookGlossary.book_id == book_id).first()
+    if existing:
+        existing.glossary_json = glossary_json
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    new_item = BookGlossary(book_id=book_id, glossary_json=glossary_json)
+    db.add(new_item)
+    db.commit()
+    db.refresh(new_item)
+    return new_item
+
+def get_book_glossary(db: Session, book_id: int) -> str:
+    """Kitap glossary JSON'ını döndürür; yoksa {} döner."""
+    glossary = db.query(BookGlossary).filter(BookGlossary.book_id == book_id).first()
+    if not glossary or not glossary.glossary_json:
+        return "{}"
+    return glossary.glossary_json

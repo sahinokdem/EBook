@@ -185,6 +185,29 @@ class GeminiRAGService:
         )
         return (response.text or "").strip()
 
+    def generate_book_glossary(self, text_content: str) -> str:
+        """Örneklenmiş kitap metninden bağlamsal terimce (JSON) üretir."""
+        if self._model is None:
+            raise RuntimeError("Gemini API key is not configured")
+
+        prompt = (
+            "Analyze the following text sampled from a book. "
+            "Identify the top 15-20 most important proper nouns (characters, places), recurring concepts, and domain-specific terms. "
+            "Provide a JSON object mapping the original terms to their short English descriptions/contexts (DO NOT translate them). "
+            "For example: {{\"Aithor\": \"The name of the AI platform\"}}. "
+            "Return ONLY valid JSON. "
+            f"Text: {text_content}"
+        )
+
+        response = self._model.generate_content(
+            prompt,
+            generation_config={
+                "temperature": 0.1,
+                "max_output_tokens": settings.GEMINI_MAX_TOKENS,
+            },
+        )
+        return (response.text or "{}").strip().replace("```json", "").replace("```", "")
+
     def translate_block_with_context(
         self,
         *,
@@ -192,32 +215,34 @@ class GeminiRAGService:
         prev_text: str,
         next_text: str,
         target_lang: str,
+        filtered_glossary_json: str = "{}"
     ) -> str:
-        """Sliding-window bağlamıyla tek blok çevirisi yapar."""
+        """Sliding-window bağlamı ve dinamik sözlükle tek blok çevirisi yapar."""
         if self._model is None:
             raise RuntimeError("Gemini API key is not configured")
 
         prompt = f"""You are an expert book translator.
-            Your task is to translate ONLY the text provided inside the <CURRENT_BLOCK> into {target_lang}.
+        Your task is to translate ONLY the text provided inside the <CURRENT_BLOCK> into {target_lang}.
 
-            RULES:
-            1. STRICTLY translate ONLY the text inside the <CURRENT_BLOCK> tags. Do NOT summarize. Translate word-for-word, keeping every single sentence.
-            2. The <PREVIOUS_BLOCK> and <NEXT_BLOCK> are provided ONLY for context. DO NOT translate them.
-            3. GIBBERISH RULE: If the <CURRENT_BLOCK> consists of meaningless characters, broken font artifacts, or gibberish (e.g., "TŔő SŏŕőŚŏő śŒ"), DO NOT try to guess or hallucinate a translation. Return an empty string.
+        RULES:
+        1. STRICTLY translate ONLY the text inside the <CURRENT_BLOCK> tags. Do NOT summarize. Translate word-for-word, keeping every single sentence.
+        2. The <PREVIOUS_BLOCK> and <NEXT_BLOCK> are provided ONLY for context. DO NOT translate them.
+        3. GIBBERISH RULE: If the <CURRENT_BLOCK> consists of meaningless characters, broken font artifacts, or gibberish (e.g., "TŔő SŏŕőŚŏő śŒ"), DO NOT try to guess or hallucinate a translation. Return an empty string.
+        4. GLOSSARY CONTEXT: Use the following JSON glossary to understand the context of the terms. When translating to {target_lang}, ensure the translation fits these specific definitions: {filtered_glossary_json}
 
-            <PREVIOUS_BLOCK>
-            {prev_text}
-            </PREVIOUS_BLOCK>
+        <PREVIOUS_BLOCK>
+        {prev_text}
+        </PREVIOUS_BLOCK>
 
-            <CURRENT_BLOCK>
-            {current_text}
-            </CURRENT_BLOCK>
+        <CURRENT_BLOCK>
+        {current_text}
+        </CURRENT_BLOCK>
 
-            <NEXT_BLOCK>
-            {next_text}
-            </NEXT_BLOCK>
+        <NEXT_BLOCK>
+        {next_text}
+        </NEXT_BLOCK>
 
-            Translation:"""
+        Translation:"""
 
         response = self._model.generate_content(
             prompt,
@@ -226,8 +251,7 @@ class GeminiRAGService:
                 "max_output_tokens": settings.GEMINI_MAX_TOKENS,
             },
         )
-        return (response.text or "").strip()
-
+        return (response.text or "").strip().replace("Translation:", "").strip()
 
 vector_db_service = VectorDBService()
 gemini_rag_service = GeminiRAGService()

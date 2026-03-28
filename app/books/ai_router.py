@@ -10,7 +10,8 @@ from app.users.models import User
 from app.books import repository as book_repository
 from app.books import page_repository
 from app.core.vector_db import vector_db_service, gemini_rag_service
-
+import json
+import re
 
 router = APIRouter(prefix="/books", tags=["AI"])
 
@@ -53,6 +54,15 @@ class TranslatePageResponse(BaseModel):
     translated_blocks: List[TranslatedBlockItem]
     full_translation: str
 
+
+def filter_glossary_for_text(glossary: dict, current_text: str) -> dict:
+    if not glossary or not current_text:
+        return {}
+    filtered_dict = {}
+    for term, explanation in glossary.items():
+        if re.search(r'\b' + re.escape(term) + r'\b', current_text, re.IGNORECASE):
+            filtered_dict[term] = explanation
+    return filtered_dict
 
 @router.post("/{book_id}/ask", response_model=AskResponse)
 def ask_book(
@@ -119,6 +129,13 @@ def translate_page(
     if not blocks:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No blocks found for this page")
 
+    # DB'den sözlüğü çek
+    raw_glossary_str = page_repository.get_book_glossary(db, book_id)
+    try:
+        full_glossary_dict = json.loads(raw_glossary_str)
+    except Exception:
+        full_glossary_dict = {}
+
     translated_items: List[TranslatedBlockItem] = []
     for block in blocks:
         cached = page_repository.get_translated_block(db, block.id, payload.target_lang)
@@ -140,12 +157,17 @@ def translate_page(
             current_index=block.block_index,
         )
 
+        # SENİN SİHRİN BURADA ÇALIŞIYOR
+        mini_glossary_dict = filter_glossary_for_text(full_glossary_dict, block.content)
+        mini_glossary_json_str = json.dumps(mini_glossary_dict, ensure_ascii=False)
+
         try:
             translated = gemini_rag_service.translate_block_with_context(
                 current_text=block.content,
                 prev_text=context.prev_text,
                 next_text=context.next_text,
                 target_lang=payload.target_lang,
+                filtered_glossary_json=mini_glossary_json_str,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc

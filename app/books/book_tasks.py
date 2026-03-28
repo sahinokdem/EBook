@@ -24,13 +24,11 @@ Kullanım:
     print(result.status)  # PENDING, STARTED, SUCCESS, FAILURE
 """
 
+from app.core.vector_db import gemini_rag_service  # <--- BURAYA EKLENDİ
+import json
 from celery import Celery
-from typing import Optional
 import base64
 import os
-
-from app.core.config import settings
-
 
 # ============================================
 # Celery Configuration
@@ -143,6 +141,29 @@ def process_book_task(self, book_id: int, file_content_base64: str, file_type: s
         )
         for idx, vector_id in enumerate(vector_ids):
             blocks_data[idx]["vector_id"] = vector_id
+
+        # 5.1 Stratified sampling ile glossary üret (best-effort)
+        try:
+            if blocks_data:
+                step = max(1, len(blocks_data) // 20)
+                sampled_blocks = blocks_data[::step][:20]
+                sampled_text = "\n\n".join(
+                    [str(item.get("content", "")) for item in sampled_blocks if item.get("content")]
+                )
+                if sampled_text.strip():
+                    glossary_json = gemini_rag_service.generate_book_glossary(sampled_text)
+                    try:
+                        parsed = json.loads(glossary_json)
+                        glossary_json = json.dumps(parsed, ensure_ascii=False)
+                    except Exception:
+                        glossary_json = "{}"
+                    page_repository.create_book_glossary(
+                        db,
+                        book_id=book_id,
+                        glossary_json=glossary_json,
+                    )
+        except Exception:
+            pass
 
         # 6. Blokları DB'ye kaydet
         page_repository.create_book_blocks(db, book_id, blocks_data)
@@ -271,6 +292,29 @@ def process_book_sync(book_id: int, file_content: bytes, file_type: str, db) -> 
         
         # 5. PostgreSQL'e kaydet
         page_repository.create_book_pages(db, book_id, blocks_data)
+
+        # 5.1 Stratified sampling ile glossary üret (best-effort)
+        try:
+            if blocks_data:
+                step = max(1, len(blocks_data) // 20)
+                sampled_blocks = blocks_data[::step][:20]
+                sampled_text = "\n\n".join(
+                    [str(item.get("content", "")) for item in sampled_blocks if item.get("content")]
+                )
+                if sampled_text.strip():
+                    glossary_json = gemini_rag_service.generate_book_glossary(sampled_text)
+                    try:
+                        parsed = json.loads(glossary_json)
+                        glossary_json = json.dumps(parsed, ensure_ascii=False)
+                    except Exception:
+                        glossary_json = "{}"
+                    page_repository.create_book_glossary(
+                        db,
+                        book_id=book_id,
+                        glossary_json=glossary_json,
+                    )
+        except Exception:
+            pass
 
         # 6. YAPAY ZEKA İÇİN QDRANT'A KAYDET (SİHRİN OLDUĞU YER)
         if blocks_data:
