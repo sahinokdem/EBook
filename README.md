@@ -1,279 +1,227 @@
-# 📚 Book Pages Feature - Implementation Guide
+# 📚 AI-Powered eBook Backend (FastAPI)
 
-PDF upload sonrası sayfa sayfa okuma özelliği.
+Bu proje, kullanıcıların PDF/EPUB kitaplarını yükleyip **okuyabildiği, çevirebildiği, özetleyebildiği ve kitapla doğal dilde soru-cevap yapabildiği** bir backend sistemidir.
 
-## 📁 Dosya Yapısı
+> Kısaca: Klasik “dosya yükle ve görüntüle” yaklaşımını, **RAG + LLM + cache** ile ölçeklenebilir bir ürün mimarisine dönüştürüyorum.
 
+---
+
+## 🚀 Neden Bu Proje Önemli?
+
+Çoğu eBook backend’i sadece dosyayı saklar. Bu projede amaç:
+
+- Kitabı sadece depolamak değil, **anlamlandırmak**
+- Uzun metinlerle çalışırken token/latency maliyetini **kontrol etmek**
+- Aynı isteği tekrar tekrar üretmek yerine **akıllı cache** kullanmak
+- Hem teknik kullanıcıya hem teknik olmayan kullanıcıya iyi bir deneyim sunmak
+
+Bu yüzden proje; veri modeli, parser, AI servisleri ve API katmanını birlikte ele alan uçtan uca bir sistem tasarımı içeriyor.
+
+---
+
+## 🧠 Teknik Olmayanlar İçin Kısa Açıklama
+
+Bir kullanıcı kitap yüklediğinde sistem:
+
+1. Kitabı küçük anlamlı parçalara böler
+2. Bu parçaları veritabanına kaydeder
+3. “Sor-Cevap”, “Çeviri”, “Özet” gibi AI işlemlerini bu parçalar üstünden yapar
+4. Aynı özet daha önce üretildiyse yeniden AI çağrısı yapmadan cache’ten döndürür
+
+Sonuç: Daha hızlı cevap, daha düşük maliyet, daha tutarlı çıktı.
+
+---
+
+## 🏗️ Mimari Özeti
+
+- **API Katmanı**: FastAPI
+- **Auth**: JWT
+- **Veritabanı**: PostgreSQL + SQLAlchemy
+- **Migration**: Alembic
+- **Arka Plan İşleri**: Celery + Redis (opsiyonel)
+- **Doküman İşleme**:
+  - PDF: PyMuPDF
+  - EPUB: ebooklib + BeautifulSoup
+- **Vektör Arama (RAG)**: Qdrant
+- **Embedding**: sentence-transformers (`all-MiniLM-L6-v2`)
+- **LLM**: Google Gemini
+
+---
+
+## 🧩 Öne Çıkan Ürün Özellikleri
+
+- PDF/EPUB upload ve işleme durum takibi (`pending`, `processing`, `completed`, `failed`)
+- Sayfa/blok bazlı içerik erişimi
+- Kitap istatistikleri
+- RAG tabanlı soru-cevap (`/ask`)
+- Bağlamsal çeviri (sliding window: önceki + mevcut + sonraki blok)
+- Tek sayfa özetleme
+- **Kitap/Bölüm Map-Reduce özetleme**
+- **Özet ve çeviri cache mekanizması**
+
+---
+
+## ⚡ Zor Kısımlar ve Mühendislik Çözümleri
+
+### 1) Uzun Metinlerde Token Limiti
+**Problem:** Kitabın tamamını tek LLM çağrısında özetlemek pratik değil.
+
+**Çözüm:** Map-Reduce yaklaşımı:
+- Metni chunk’lara böl
+- Her chunk’ı özetle (Map)
+- Chunk özetlerini birleştirip final özet üret (Reduce)
+
+### 2) Rate Limit ve Maliyet Yönetimi
+**Problem:** Ücretsiz/limitli API kullanımında çok çağrı sistemi zorlar.
+
+**Çözüm:**
+- Chunk çağrıları arasında kontrollü bekleme
+- Aynı isteklerde veritabanı cache kullanımı
+
+### 3) Çıktı Tutarlılığı (Terim Birliği)
+**Problem:** AI farklı çağrılarda aynı terimi farklı çevirebiliyor.
+
+**Çözüm:**
+- Kitaba özel glossary üretimi
+- İlgili metin için glossary filtreleme
+- Çeviri ve özette terim bağlamı kullanımı
+
+### 4) Veri Modeli Evrimi
+**Problem:** Sayfa bazlı model, RAG senaryoları için yetersiz kalıyor.
+
+**Çözüm:**
+- `BookPage` yaklaşımından `BookBlock` mimarisine geçiş
+- Vektör kimliği (`vector_id`) ile retrieval optimizasyonu
+- Alembic migration ile güvenli geçiş
+
+---
+
+## 🗃️ Cache Stratejisi
+
+### Çeviri Cache
+- Model: `TranslatedBlock`
+- Anahtar mantığı: `(block_id, target_language)`
+
+### Özet Cache
+- Model: `BookSummary`
+- Anahtar mantığı: `(book_id, target_language, start_page, end_page)`
+- Aynı kapsam tekrar istenirse LLM’e gitmeden doğrudan DB’den dönülür
+
+Bu yaklaşım performansı artırır ve maliyeti düşürür.
+
+---
+
+## 🔌 API Özeti
+
+### Auth (`/api/v1/auth`)
+- `POST /signup`
+- `POST /login`
+- `GET /me`
+
+### Books (`/api/v1/books`)
+- `POST /upload`
+- `GET /`
+- `GET /{book_id}`
+- `DELETE /{book_id}`
+- `GET /{book_id}/status`
+- `GET /{book_id}/pages`
+- `GET /{book_id}/pages/{page_number}`
+- `GET /{book_id}/pages/range?start=&end=`
+- `GET /{book_id}/stats`
+
+### AI (`/api/v1/books`)
+- `POST /{book_id}/ask`
+- `POST /{book_id}/pages/{page_number}/translate`
+- `POST /{book_id}/pages/{page_number}/summarize`
+- `POST /{book_id}/summarize`  ← Map-Reduce + cache
+
+---
+
+## 🧪 Örnek: Kitap/Bölüm Özetleme
+
+`POST /api/v1/books/{book_id}/summarize`
+
+```json
+{
+  "target_lang": "tr",
+  "start_page": 1,
+  "end_page": 25
+}
 ```
-app/
-├── books/
-│   ├── models.py           ← GÜNCELLENDİ (Book + BookPage)
-│   ├── repository.py       ← GÜNCELLENDİ (file_path kaldırıldı)
-│   ├── service.py          ← GÜNCELLENDİ (PDF processing)
-│   ├── router.py           ← Mevcut (değişiklik yok)
-│   ├── schemas.py          ← GÜNCELLENDİ (status eklendi)
-│   ├── pdf_parser.py       ← YENİ (PDF → HTML)
-│   ├── page_repository.py  ← YENİ (BookPage CRUD)
-│   ├── page_service.py     ← YENİ (Page business logic)
-│   ├── page_router.py      ← YENİ (Page endpoints)
-│   └── page_schemas.py     ← YENİ (Page response models)
-├── tasks/
-│   └── book_tasks.py       ← YENİ (Celery tasks)
-├── core/
-│   └── config.py           ← GÜNCELLENDİ (Celery config)
-└── migrations/
-    └── xxxx_add_book_pages.py  ← YENİ (Alembic migration)
-```
 
-## 🔄 Değişiklikler Özeti
+İçeride olanlar:
+1. Önce `BookSummary` cache kontrolü
+2. Cache yoksa Map-Reduce pipeline
+3. Sonucun cache’e yazılması
+4. Response dönülmesi
 
-### Book Model (models.py)
-```python
-# Kaldırılan
-- file_path  # PDF artık saklanmıyor
+---
 
-# Eklenen
-+ status: BookStatus (pending/processing/completed/failed)
-+ total_pages: int
-+ error_message: str
-+ pages: relationship → BookPage
-```
+## 🛠️ Lokal Kurulum
 
-### Yeni Model: BookPage
-```python
-class BookPage:
-    id: int
-    book_id: int (FK)
-    page_number: int
-    content: str (HTML)
-    word_count: int
-    char_count: int
-```
-
-## 🚀 Kurulum
-
-### 1. Dependencies
 ```bash
-pip install PyMuPDF celery redis
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### 2. Redis (Celery için)
 ```bash
-# Docker ile
-docker run -d -p 6379:6379 redis
-
-# veya brew (macOS)
-brew install redis && brew services start redis
-```
-
-### 3. Environment Variables (.env)
-```env
-# Mevcut ayarlar...
-
-# Celery
-CELERY_BROKER_URL=redis://localhost:6379/0
-CELERY_RESULT_BACKEND=redis://localhost:6379/0
-USE_CELERY=false  # Development'ta false, production'da true
-```
-
-### 4. Migration
-```bash
-alembic revision --autogenerate -m "add book pages"
 alembic upgrade head
 ```
 
-### 5. Celery Worker (Production)
 ```bash
-celery -A app.tasks.book_tasks.celery_app worker --loglevel=info
+uvicorn app.main:app --reload
 ```
 
-## 📡 API Endpoints
+Opsiyonel worker:
 
-### Mevcut (Books)
-| Method | Endpoint | Açıklama |
-|--------|----------|----------|
-| POST | `/api/v1/books/upload` | Kitap upload |
-| GET | `/api/v1/books` | Kitap listesi |
-| GET | `/api/v1/books/{id}` | Kitap detay |
-| DELETE | `/api/v1/books/{id}` | Kitap sil |
-
-### Yeni (Pages)
-| Method | Endpoint | Açıklama |
-|--------|----------|----------|
-| GET | `/api/v1/books/{id}/status` | İşleme durumu |
-| GET | `/api/v1/books/{id}/pages` | Sayfa listesi |
-| GET | `/api/v1/books/{id}/pages/{n}` | Sayfa içeriği |
-| GET | `/api/v1/books/{id}/pages/range` | Sayfa aralığı |
-| GET | `/api/v1/books/{id}/stats` | Kitap istatistikleri |
-
-## 🔄 Upload → Read Flow
-
-```
-1. Client: POST /books/upload (PDF file)
-   ↓
-2. Server: 
-   - File validation
-   - Create Book (status: PENDING)
-   - Start processing (sync/async)
-   ↓
-3. Processing:
-   - PDF → HTML parse
-   - Create BookPages
-   - Update Book (status: COMPLETED)
-   ↓
-4. Client: GET /books/{id}/status
-   - Poll until status == "completed"
-   ↓
-5. Client: GET /books/{id}/pages/1
-   - Read first page
+```bash
+celery -A app.books.book_tasks.celery_app worker --loglevel=info
 ```
 
-## 📖 Response Examples
+---
 
-### Book Status
-```json
-GET /api/v1/books/1/status
+## 📁 Kod Yapısı (Kısa)
 
-{
-  "book_id": 1,
-  "status": "completed",
-  "total_pages": 320,
-  "error_message": null,
-  "progress_message": "Ready to read!"
-}
+```text
+app/
+├── main.py
+├── core/
+│   └── config.py
+├── users/
+└── books/
+    ├── models.py
+    ├── router.py
+    ├── page_router.py
+    ├── ai_router.py
+    ├── page_repository.py
+    ├── parser.py
+    ├── pdf_parser.py
+    ├── epub_parser.py
+    └── book_tasks.py
 ```
 
-### Page Content
-```json
-GET /api/v1/books/1/pages/5
+---
 
-{
-  "page": {
-    "page_number": 5,
-    "content": "<h1>Chapter 2</h1><p>The story <strong>continues</strong>...</p>",
-    "word_count": 350,
-    "char_count": 2100,
-    "book_id": 1
-  },
-  "has_previous": true,
-  "has_next": true,
-  "previous_page": 4,
-  "next_page": 6,
-  "total_pages": 320
-}
-```
+## 🎯 Bu Projede Ne Gösteriliyor?
 
-### Page Range (AI Context)
-```json
-GET /api/v1/books/1/pages/range?start=5&end=10
+- Ürün ihtiyacını teknik tasarıma çevirme
+- Monolit içinde temiz katmanlama (router/service/repository)
+- LLM/RAG uygulamalarında maliyet-performans optimizasyonu
+- Migration ve model evrimi yönetimi
+- API güvenliği, gözlemlenebilirlik ve bakım kolaylığına odaklı backend geliştirme
 
-{
-  "pages": [
-    {"page_number": 5, "content": "...", ...},
-    {"page_number": 6, "content": "...", ...},
-    ...
-  ],
-  "start_page": 5,
-  "end_page": 10,
-  "total_pages": 320,
-  "book_id": 1
-}
-```
+---
 
-## 🎨 HTML Content Format
+## 🔭 Sonraki Adımlar
 
-PDF'den çıkarılan içerik HTML formatında:
+- Observability (request tracing + token/cost metrics)
+- Asenkron summary queue ve progress endpoint
+- Hybrid search (BM25 + vector)
+- Test coverage ve benchmark raporları
 
-```html
-<h1>Chapter Title</h1>
-<h2>Section Title</h2>
-<p>Normal paragraph text here.</p>
-<p>Text with <strong>bold</strong> and <em>italic</em> formatting.</p>
-```
+---
 
-### Supported Tags
-- `<h1>`, `<h2>`, `<h3>` - Başlıklar (font size'a göre)
-- `<p>` - Paragraflar
-- `<strong>` - Kalın metin
-- `<em>` - İtalik metin
+## 📌 Kısa Özet
 
-## ⚙️ Configuration
-
-### PDF Parser (pdf_parser.py)
-```python
-H1_MIN_SIZE = 18  # 18pt+ → <h1>
-H2_MIN_SIZE = 14  # 14-17pt → <h2>
-H3_MIN_SIZE = 12  # 12-13pt → <h3>
-# Geri kalan → <p>
-```
-
-### Processing Mode
-```python
-# config.py veya .env
-USE_CELERY = False  # Sync processing (development)
-USE_CELERY = True   # Async processing (production)
-```
-
-## 🧪 Testing
-
-```python
-# Test upload
-response = client.post(
-    "/api/v1/books/upload",
-    files={"file": ("test.pdf", pdf_bytes, "application/pdf")},
-    data={"title": "Test Book", "author": "Test Author"},
-    headers={"Authorization": f"Bearer {token}"}
-)
-
-book_id = response.json()["id"]
-
-# Poll status
-while True:
-    status = client.get(f"/api/v1/books/{book_id}/status", ...)
-    if status.json()["status"] == "completed":
-        break
-    time.sleep(1)
-
-# Read page
-page = client.get(f"/api/v1/books/{book_id}/pages/1", ...)
-print(page.json()["page"]["content"])
-```
-
-## 📝 main.py Entegrasyonu
-
-```python
-from fastapi import FastAPI
-from app.books.router import router as books_router
-from app.books.page_router import router as pages_router
-
-app = FastAPI()
-
-# Books endpoints
-app.include_router(
-    books_router,
-    prefix="/api/v1/books",
-    tags=["Books"]
-)
-
-# Pages endpoints (aynı prefix, farklı router)
-app.include_router(
-    pages_router,
-    prefix="/api/v1/books",
-    tags=["Book Pages"]
-)
-```
-
-## 🔮 Gelecek Geliştirmeler
-
-1. **Reading Progress** - Kullanıcının nerede kaldığını kaydet
-2. **Bookmarks** - Sayfa işaretleme
-3. **EPUB Support** - EPUB dosyaları için parser
-4. **Search** - Kitap içinde arama
-5. **AI Integration** - Sayfa içeriğini AI'a context olarak gönder
-
-## ⚠️ Önemli Notlar
-
-1. **PDF Saklanmıyor**: Upload sonrası PDF silinir, sadece parse edilmiş içerik kalır
-2. **Retry Yok**: Failed kitap için tekrar upload gerekli
-3. **Max Pages**: 1000 sayfa limiti (config'den değiştirilebilir)
-4. **Max Range**: `/pages/range` endpoint'i max 20 sayfa döner
+Bu proje, klasik bir eBook backend’inden daha fazlası: **AI özelliklerinin gerçek hayattaki limitlerine (token, latency, maliyet, tutarlılık) mühendislik çözümleri üreten** bir sistem demonstrasyonu.
