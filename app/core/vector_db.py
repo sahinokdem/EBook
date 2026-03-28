@@ -185,6 +185,27 @@ class GeminiRAGService:
         )
         return (response.text or "").strip()
 
+    def summarize_text(self, text_content: str, target_lang: str = "tr", filtered_glossary_json: str = "{}") -> str:
+        """Verilen metnin belirtilen dilde ve sözlük bağlamına uygun özetini çıkarır."""
+        if self._model is None:
+            raise RuntimeError("Gemini API key is not configured")
+
+        prompt = (
+            f"You are an expert editor and summarizer. "
+            f"Please provide a concise, comprehensive, and spoiler-free summary of the following book page/excerpt. "
+            f"Write the summary in this language: {target_lang}. "
+            f"Do NOT add your own comments, just summarize the text.\n\n"
+            f"GLOSSARY CONTEXT: Use the following JSON glossary to understand the context of the terms. When writing the summary, ensure your terminology fits these specific definitions: {filtered_glossary_json}\n\n"
+            f"Text to summarize:\n{text_content}\n\n"
+            f"Summary:"
+        )
+
+        response = self._model.generate_content(
+            prompt,
+            generation_config={"temperature": 0.4, "max_output_tokens": 1024}
+        )
+        return (response.text or "").strip()
+
     def generate_book_glossary(self, text_content: str) -> str:
         """Örneklenmiş kitap metninden bağlamsal terimce (JSON) üretir."""
         if self._model is None:
@@ -252,6 +273,47 @@ class GeminiRAGService:
             },
         )
         return (response.text or "").strip().replace("Translation:", "").strip()
+
+    def summarize_chunk(self, text_chunk: str, target_lang: str = "tr", filtered_glossary_json: str = "{}") -> str:
+        """Chunk/parça özetlemesi (Map aşaması). Büyük metni küçük parçalara ayırıp özet çıkarır."""
+        if self._model is None:
+            raise RuntimeError("Gemini API key is not configured")
+
+        prompt = (
+            f"You are an expert editor and summarizer. "
+            f"Please provide a detailed but concise summary of the following book excerpt in {target_lang}. "
+            f"Preserve all key information, names, and plot points. "
+            f"Do NOT add your own comments, just summarize the text.\n\n"
+            f"GLOSSARY CONTEXT: Use the following JSON glossary to understand the context of the terms. When writing the summary, ensure your terminology fits these specific definitions: {filtered_glossary_json}\n\n"
+            f"Text to summarize:\n{text_chunk}\n\n"
+            f"Summary:"
+        )
+
+        response = self._model.generate_content(
+            prompt,
+            generation_config={"temperature": 0.4, "max_output_tokens": 1024}
+        )
+        return (response.text or "").strip()
+
+    def summarize_master(self, combined_summaries: str, target_lang: str = "tr") -> str:
+        """Birden fazla özet birleştirme (Reduce aşaması). Chunk özetlerini ana özete dönüştürür."""
+        if self._model is None:
+            raise RuntimeError("Gemini API key is not configured")
+
+        prompt = (
+            f"You are an expert editor. You have received multiple summaries from different sections of a book. "
+            f"Your task is to synthesize these summaries into a single, cohesive, high-quality master summary in {target_lang}. "
+            f"Eliminate redundancies, preserve all critical information, and maintain narrative flow. "
+            f"Do NOT add your own comments or interpretations.\n\n"
+            f"Section Summaries:\n{combined_summaries}\n\n"
+            f"Master Summary:"
+        )
+
+        response = self._model.generate_content(
+            prompt,
+            generation_config={"temperature": 0.3, "max_output_tokens": 2048}
+        )
+        return (response.text or "").strip()
 
 vector_db_service = VectorDBService()
 gemini_rag_service = GeminiRAGService()

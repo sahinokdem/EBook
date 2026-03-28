@@ -95,6 +95,8 @@ class Book(Base):
     """
     glossary = relationship("BookGlossary", back_populates="book",
                              uselist=False, cascade="all, delete-orphan")
+    summaries = relationship("BookSummary", back_populates="book",
+                              cascade="all, delete-orphan")
 
     @property
     def pages(self):
@@ -201,3 +203,31 @@ class TranslatedBlock(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     
     block = relationship("BookBlock", back_populates="translations")
+
+
+class BookSummary(Base):
+    """
+    Özetlenen kitap/bölüm önbellek tablosu.
+    Map-Reduce özetlemesi yapıldıktan sonra sonuçlar burada saklanır.
+    Aynı sayfa aralığı ve dil kombinasyonu tekrar istendiğinde API'ye gitmemek için kullanılır.
+    """
+    __tablename__ = "book_summaries"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    book_id = Column(Integer, ForeignKey("books.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    target_language = Column(String(10), nullable=False, index=True, default="tr")
+    """Hedef dil kodu (örn: 'tr', 'en')"""
+    
+    start_page = Column(Integer, nullable=True, index=True)
+    """Başlangıç sayfa numarası (None = kitabın başından)"""
+    
+    end_page = Column(Integer, nullable=True, index=True)
+    """Bitiş sayfa numarası (None = kitabın sonuna)"""
+    
+    summary_text = Column(Text, nullable=False)
+    """Oluşturulan özet metni"""
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    
+    book = relationship("Book", back_populates="summaries")

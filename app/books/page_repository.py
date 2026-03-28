@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 from typing import Optional, List
 from types import SimpleNamespace
-from app.books.models import Book, BookBlock, BookGlossary, BookStatus, TranslatedBlock
+from app.books.models import Book, BookBlock, BookGlossary, BookStatus, TranslatedBlock, BookSummary
 
 
 # ============================================
@@ -406,3 +406,72 @@ def get_book_glossary(db: Session, book_id: int) -> str:
     if not glossary or not glossary.glossary_json:
         return "{}"
     return glossary.glossary_json
+
+
+# ============================================
+# Summary Caching Operations
+# ============================================
+
+def get_cached_summary(
+    db: Session,
+    book_id: int,
+    target_lang: str,
+    start_page: Optional[int],
+    end_page: Optional[int]
+) -> Optional[BookSummary]:
+    """
+    Verilen kitap, dil ve sayfa aralığı kombinasyonu için önbellekte özet arar.
+    
+    Args:
+        db: Database session
+        book_id: Kitap ID
+        target_lang: Hedef dil (örn: 'tr', 'en')
+        start_page: Başlangıç sayfa (None = kitabın başından)
+        end_page: Bitiş sayfa (None = kitabın sonuna)
+    
+    Returns:
+        BookSummary nesnesi varsa, yoksa None
+    """
+    return db.query(BookSummary).filter(
+        and_(
+            BookSummary.book_id == book_id,
+            BookSummary.target_language == target_lang,
+            BookSummary.start_page == start_page,
+            BookSummary.end_page == end_page
+        )
+    ).first()
+
+
+def create_cached_summary(
+    db: Session,
+    book_id: int,
+    target_lang: str,
+    start_page: Optional[int],
+    end_page: Optional[int],
+    summary_text: str
+) -> BookSummary:
+    """
+    Yeni bir özet kaydını önbelleğe ekle.
+    
+    Args:
+        db: Database session
+        book_id: Kitap ID
+        target_lang: Hedef dil (örn: 'tr', 'en')
+        start_page: Başlangıç sayfa (None = kitabın başından)
+        end_page: Bitiş sayfa (None = kitabın sonuna)
+        summary_text: Özet metni
+    
+    Returns:
+        Oluşturulan BookSummary nesnesi
+    """
+    new_summary = BookSummary(
+        book_id=book_id,
+        target_language=target_lang,
+        start_page=start_page,
+        end_page=end_page,
+        summary_text=summary_text
+    )
+    db.add(new_summary)
+    db.commit()
+    db.refresh(new_summary)
+    return new_summary
