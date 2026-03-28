@@ -1,18 +1,15 @@
 """
-BookPage Repository - Database CRUD operations.
+BookBlock Repository - Database CRUD operations.
 
-BookPage için:
-- Sayfa oluşturma (batch)
-- Sayfa getirme (tek/çoklu)
-- Sayfa silme
-
-Book status güncelleme de burada.
+RAG mimarisi için blok/chunk odaklı veri erişimi sağlar.
+Eski page tabanlı fonksiyon isimleri geriye dönük uyumluluk için korunmuştur.
 """
 
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, or_, func
 from typing import Optional, List
-from app.books.models import Book, BookPage, BookStatus
+from types import SimpleNamespace
+from app.books.models import Book, BookBlock, BookGlossary, BookStatus, TranslatedBlock, BookSummary
 
 
 # ============================================
@@ -83,58 +80,98 @@ def set_book_failed(db: Session, book_id: int, error_message: str) -> Optional[B
 # BookPage Operations
 # ============================================
 
-def create_book_pages(
+def create_book_blocks(
     db: Session,
     book_id: int,
-    pages_data: List[dict]
-) -> List[BookPage]:
+    blocks_data: List[dict]
+) -> List[BookBlock]:
     """
-    Birden fazla sayfa oluştur (batch insert).
+    Birden fazla blok oluştur (batch insert).
     
     Args:
         db: Database session
         book_id: Book ID
-        pages_data: Sayfa verileri listesi
+        blocks_data: Blok verileri listesi
             [
                 {
                     "page_number": 1,
-                    "content": "<h1>...</h1><p>...</p>",
+                    "block_index": 0,
+                    "content": "...",
                     "word_count": 250,
-                    "char_count": 1500
+                    "char_count": 1500,
+                    "vector_id": "uuid-or-string"
                 },
                 ...
             ]
     
     Returns:
-        List[BookPage]: Oluşturulan sayfalar
+        List[BookBlock]: Oluşturulan bloklar
     """
-    pages = []
+    blocks = []
     
-    for page_data in pages_data:
-        page = BookPage(
+    for block_data in blocks_data:
+        block = BookBlock(
             book_id=book_id,
-            page_number=page_data["page_number"],
-            content=page_data["content"],
-            word_count=page_data.get("word_count", 0),
-            char_count=page_data.get("char_count", 0)
+            page_number=block_data["page_number"],
+            block_index=block_data.get("block_index", 0),
+            content=block_data["content"],
+            word_count=block_data.get("word_count", 0),
+            char_count=block_data.get("char_count", 0),
+            vector_id=block_data.get("vector_id")
         )
-        db.add(page)
-        pages.append(page)
+        db.add(block)
+        blocks.append(block)
     
     db.commit()
     
-    # Refresh all pages
-    for page in pages:
-        db.refresh(page)
+    for block in blocks:
+        db.refresh(block)
     
-    return pages
+    return blocks
+
+
+def create_book_pages(
+    db: Session,
+    book_id: int,
+    pages_data: List[dict]
+) -> List[BookBlock]:
+    """Geriye dönük uyumluluk alias'ı."""
+    normalized = []
+    for idx, item in enumerate(pages_data):
+        normalized.append(
+            {
+                "page_number": item["page_number"],
+                "block_index": item.get("block_index", idx),
+                "content": item["content"],
+                "word_count": item.get("word_count", 0),
+                "char_count": item.get("char_count", 0),
+                "vector_id": item.get("vector_id"),
+            }
+        )
+    return create_book_blocks(db, book_id, normalized)
+
+
+def _aggregate_blocks_to_page_view(book_id: int, page_number: int, blocks: List[BookBlock]):
+    """Aynı sayfadaki blokları page-view objesine dönüştür."""
+    if not blocks:
+        return None
+    content = "\n\n".join([block.content for block in blocks if block.content])
+    word_count = sum(block.word_count for block in blocks)
+    char_count = sum(block.char_count for block in blocks)
+    return SimpleNamespace(
+        book_id=book_id,
+        page_number=page_number,
+        content=content,
+        word_count=word_count,
+        char_count=char_count,
+    )
 
 
 def get_page_by_number(
     db: Session, 
     book_id: int, 
     page_number: int
-) -> Optional[BookPage]:
+) -> Optional[SimpleNamespace]:
     """
     Belirli sayfa numarasını getir.
     
@@ -144,14 +181,15 @@ def get_page_by_number(
         page_number: Sayfa numarası (1'den başlar)
     
     Returns:
-        BookPage: Sayfa veya None
+        Page view veya None
     """
-    return db.query(BookPage).filter(
+    blocks = db.query(BookBlock).filter(
         and_(
-            BookPage.book_id == book_id,
-            BookPage.page_number == page_number
+            BookBlock.book_id == book_id,
+            BookBlock.page_number == page_number
         )
-    ).first()
+    ).order_by(BookBlock.block_index).all()
+    return _aggregate_blocks_to_page_view(book_id, page_number, blocks)
 
 
 def get_book_pages(
@@ -159,7 +197,7 @@ def get_book_pages(
     book_id: int,
     skip: int = 0,
     limit: int = 10
-) -> List[BookPage]:
+) -> List[SimpleNamespace]:
     """
     Kitabın sayfalarını listele (pagination).
     
@@ -170,14 +208,24 @@ def get_book_pages(
         limit: Maksimum sayfa sayısı
     
     Returns:
-        List[BookPage]: Sayfalar listesi
+        List[PageView]: Sayfalar listesi
     """
-    return db.query(BookPage)\
-        .filter(BookPage.book_id == book_id)\
-        .order_by(BookPage.page_number)\
+    page_numbers = db.query(BookBlock.page_number)\
+        .filter(BookBlock.book_id == book_id)\
+        .group_by(BookBlock.page_number)\
+        .order_by(BookBlock.page_number)\
         .offset(skip)\
         .limit(limit)\
         .all()
+    result = []
+    for (page_number,) in page_numbers:
+        blocks = db.query(BookBlock).filter(
+            and_(BookBlock.book_id == book_id, BookBlock.page_number == page_number)
+        ).order_by(BookBlock.block_index).all()
+        page_view = _aggregate_blocks_to_page_view(book_id, page_number, blocks)
+        if page_view:
+            result.append(page_view)
+    return result
 
 
 def get_pages_range(
@@ -185,7 +233,7 @@ def get_pages_range(
     book_id: int,
     start_page: int,
     end_page: int
-) -> List[BookPage]:
+) -> List[SimpleNamespace]:
     """
     Belirli sayfa aralığını getir.
     
@@ -196,45 +244,234 @@ def get_pages_range(
         end_page: Bitiş sayfa (dahil)
     
     Returns:
-        List[BookPage]: Sayfalar listesi
+        List[PageView]: Sayfalar listesi
     """
-    return db.query(BookPage)\
+    page_numbers = db.query(BookBlock.page_number)\
         .filter(
             and_(
-                BookPage.book_id == book_id,
-                BookPage.page_number >= start_page,
-                BookPage.page_number <= end_page
+                BookBlock.book_id == book_id,
+                BookBlock.page_number >= start_page,
+                BookBlock.page_number <= end_page,
             )
         )\
-        .order_by(BookPage.page_number)\
+        .group_by(BookBlock.page_number)\
+        .order_by(BookBlock.page_number)\
         .all()
+    result = []
+    for (page_number,) in page_numbers:
+        blocks = db.query(BookBlock).filter(
+            and_(BookBlock.book_id == book_id, BookBlock.page_number == page_number)
+        ).order_by(BookBlock.block_index).all()
+        page_view = _aggregate_blocks_to_page_view(book_id, page_number, blocks)
+        if page_view:
+            result.append(page_view)
+    return result
 
 
 def count_book_pages(db: Session, book_id: int) -> int:
-    """Kitabın toplam sayfa sayısı."""
-    return db.query(BookPage)\
-        .filter(BookPage.book_id == book_id)\
-        .count()
+    """Kitabın toplam benzersiz sayfa sayısı."""
+    result = db.query(func.count(func.distinct(BookBlock.page_number)))\
+        .filter(BookBlock.book_id == book_id)\
+        .scalar()
+    return int(result or 0)
 
 
-def delete_book_pages(db: Session, book_id: int) -> int:
+def delete_book_blocks(db: Session, book_id: int) -> int:
     """
-    Kitabın tüm sayfalarını sil.
+    Kitabın tüm bloklarını sil.
     
     Returns:
         int: Silinen sayfa sayısı
     """
-    deleted = db.query(BookPage)\
-        .filter(BookPage.book_id == book_id)\
+    deleted = db.query(BookBlock)\
+        .filter(BookBlock.book_id == book_id)\
         .delete()
     db.commit()
     return deleted
 
 
+def delete_book_pages(db: Session, book_id: int) -> int:
+    """Geriye dönük uyumluluk alias'ı."""
+    return delete_book_blocks(db, book_id)
+
+
 def get_book_word_count(db: Session, book_id: int) -> int:
     """Kitabın toplam kelime sayısı."""
-    from sqlalchemy import func
-    result = db.query(func.sum(BookPage.word_count))\
-        .filter(BookPage.book_id == book_id)\
+    result = db.query(func.sum(BookBlock.word_count))\
+        .filter(BookBlock.book_id == book_id)\
         .scalar()
     return result or 0
+
+
+def get_book_blocks(db: Session, book_id: int, limit: int = 200) -> List[BookBlock]:
+    """Kitabın bloklarını sırayla getir."""
+    return db.query(BookBlock).filter(BookBlock.book_id == book_id)\
+        .order_by(BookBlock.page_number, BookBlock.block_index)\
+        .limit(limit)\
+        .all()
+
+
+def get_blocks_by_page(db: Session, book_id: int, page_number: int) -> List[BookBlock]:
+    """Belirli sayfadaki tüm blokları block_index sırasına göre getir."""
+    return db.query(BookBlock).filter(
+        and_(BookBlock.book_id == book_id, BookBlock.page_number == page_number)
+    ).order_by(BookBlock.block_index).all()
+
+
+def get_block_context(db: Session, book_id: int, current_page: int, current_index: int) -> SimpleNamespace:
+    """
+    Verilen bloğun bir önceki ve bir sonraki bloklarını getirir.
+    Sayfa sınırlarını aşarak komşu blokları bulur.
+    """
+    prev_block = db.query(BookBlock).filter(
+        and_(
+            BookBlock.book_id == book_id,
+            or_(
+                BookBlock.page_number < current_page,
+                and_(BookBlock.page_number == current_page, BookBlock.block_index < current_index),
+            ),
+        )
+    ).order_by(BookBlock.page_number.desc(), BookBlock.block_index.desc()).first()
+
+    next_block = db.query(BookBlock).filter(
+        and_(
+            BookBlock.book_id == book_id,
+            or_(
+                BookBlock.page_number > current_page,
+                and_(BookBlock.page_number == current_page, BookBlock.block_index > current_index),
+            ),
+        )
+    ).order_by(BookBlock.page_number.asc(), BookBlock.block_index.asc()).first()
+
+    return SimpleNamespace(
+        prev_block=prev_block,
+        next_block=next_block,
+        prev_text=prev_block.content if prev_block else "",
+        next_text=next_block.content if next_block else "",
+    )
+
+
+def get_translated_block(db: Session, block_id: int, target_lang: str) -> Optional[TranslatedBlock]:
+    """Belirli blok + hedef dil için cache çevirisini getir."""
+    return db.query(TranslatedBlock).filter(
+        and_(
+            TranslatedBlock.block_id == block_id,
+            TranslatedBlock.target_language == target_lang,
+        )
+    ).first()
+
+
+def create_translated_block(
+    db: Session,
+    block_id: int,
+    target_lang: str,
+    translated_content: str,
+) -> TranslatedBlock:
+    """Yeni çeviri kaydı oluşturur; varsa mevcut kaydı günceller."""
+    existing = get_translated_block(db, block_id, target_lang)
+    if existing:
+        existing.translated_content = translated_content
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    new_item = TranslatedBlock(
+        block_id=block_id,
+        target_language=target_lang,
+        translated_content=translated_content,
+    )
+    db.add(new_item)
+    db.commit()
+    db.refresh(new_item)
+    return new_item
+
+def create_book_glossary(db: Session, book_id: int, glossary_json: str) -> BookGlossary:
+    """Kitap glossary kaydını oluşturur ya da günceller."""
+    existing = db.query(BookGlossary).filter(BookGlossary.book_id == book_id).first()
+    if existing:
+        existing.glossary_json = glossary_json
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    new_item = BookGlossary(book_id=book_id, glossary_json=glossary_json)
+    db.add(new_item)
+    db.commit()
+    db.refresh(new_item)
+    return new_item
+
+def get_book_glossary(db: Session, book_id: int) -> str:
+    """Kitap glossary JSON'ını döndürür; yoksa {} döner."""
+    glossary = db.query(BookGlossary).filter(BookGlossary.book_id == book_id).first()
+    if not glossary or not glossary.glossary_json:
+        return "{}"
+    return glossary.glossary_json
+
+
+# ============================================
+# Summary Caching Operations
+# ============================================
+
+def get_cached_summary(
+    db: Session,
+    book_id: int,
+    target_lang: str,
+    start_page: Optional[int],
+    end_page: Optional[int]
+) -> Optional[BookSummary]:
+    """
+    Verilen kitap, dil ve sayfa aralığı kombinasyonu için önbellekte özet arar.
+    
+    Args:
+        db: Database session
+        book_id: Kitap ID
+        target_lang: Hedef dil (örn: 'tr', 'en')
+        start_page: Başlangıç sayfa (None = kitabın başından)
+        end_page: Bitiş sayfa (None = kitabın sonuna)
+    
+    Returns:
+        BookSummary nesnesi varsa, yoksa None
+    """
+    return db.query(BookSummary).filter(
+        and_(
+            BookSummary.book_id == book_id,
+            BookSummary.target_language == target_lang,
+            BookSummary.start_page == start_page,
+            BookSummary.end_page == end_page
+        )
+    ).first()
+
+
+def create_cached_summary(
+    db: Session,
+    book_id: int,
+    target_lang: str,
+    start_page: Optional[int],
+    end_page: Optional[int],
+    summary_text: str
+) -> BookSummary:
+    """
+    Yeni bir özet kaydını önbelleğe ekle.
+    
+    Args:
+        db: Database session
+        book_id: Kitap ID
+        target_lang: Hedef dil (örn: 'tr', 'en')
+        start_page: Başlangıç sayfa (None = kitabın başından)
+        end_page: Bitiş sayfa (None = kitabın sonuna)
+        summary_text: Özet metni
+    
+    Returns:
+        Oluşturulan BookSummary nesnesi
+    """
+    new_summary = BookSummary(
+        book_id=book_id,
+        target_language=target_lang,
+        start_page=start_page,
+        end_page=end_page,
+        summary_text=summary_text
+    )
+    db.add(new_summary)
+    db.commit()
+    db.refresh(new_summary)
+    return new_summary

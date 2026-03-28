@@ -1,4 +1,5 @@
 from logging.config import fileConfig
+import os
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 from alembic import context
@@ -13,8 +14,14 @@ from app.books.models import Book
 # this is the Alembic Config object
 config = context.config
 
+# Önce ENV'deki DATABASE_URL'e bak, yoksa settings'ten al
+database_url = os.getenv("DATABASE_URL") or settings.DATABASE_URL
+
+# DEBUG için istersen bir kere loglayabilirsin (deploy'dan sonra silebilirsin)
+print(f"[Alembic] Using DATABASE_URL: {database_url}")
+
 # Database URL'i settings'ten al (env.py yerine)
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", database_url)
 
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:

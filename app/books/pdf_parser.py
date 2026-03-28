@@ -1,32 +1,30 @@
 """
-PDF Parser Service
+PDF Parser Service (Block/Chunk Based)
 
-PDF dosyasını parse edip HTML formatında içerik çıkarır.
-PyMuPDF (fitz) kullanır - en iyi formatting desteği sağlar.
+PDF dosyasını RAG için blok/paragraf tabanlı parse eder.
+PyMuPDF page.get_text("blocks") kullanır.
 
 Kurulum:
     pip install PyMuPDF
 
 Özellikler:
-- Başlık tespiti (font size'a göre)
-- Paragraf ayrımı
-- Bold/Italic tespit
-- Satır birleştirme (hyphenation fix)
+- Sayfa bazlı değil blok bazlı extraction
+- Anlamsal bütünlük korunarak chunk üretimi
+- Karakter limiti kontrollü birleştirme
 """
 
 import fitz  # PyMuPDF
-from typing import List, Dict, Optional, BinaryIO
+from typing import List, Optional
 from dataclasses import dataclass
-from pathlib import Path
 import re
-import html
 
 
 @dataclass
-class ParsedPage:
-    """Parse edilmiş sayfa verisi."""
+class ParsedBlock:
+    """Parse edilmiş blok/chunk verisi."""
     page_number: int
-    content: str  # HTML formatted
+    block_index: int
+    content: str
     word_count: int
     char_count: int
 
@@ -35,9 +33,19 @@ class ParsedPage:
 class ParseResult:
     """Parse işlemi sonucu."""
     success: bool
-    pages: List[ParsedPage]
-    total_pages: int
+    blocks: List[ParsedBlock]
+    total_blocks: int
     error_message: Optional[str] = None
+
+    @property
+    def pages(self):
+        """Geriye dönük uyumluluk: eski kod result.pages bekliyorsa çalışsın."""
+        return self.blocks
+
+    @property
+    def total_pages(self):
+        """Geriye dönük uyumluluk: eski kod result.total_pages bekliyorsa çalışsın."""
+        return self.total_blocks
 
 
 class PDFParser:
@@ -53,10 +61,9 @@ class PDFParser:
             print(page.content)  # HTML içerik
     """
     
-    # Font size thresholds (başlık tespiti için)
-    H1_MIN_SIZE = 18  # 18pt ve üstü → <h1>
-    H2_MIN_SIZE = 14  # 14-17pt → <h2>
-    H3_MIN_SIZE = 12  # 12-13pt → <h3>
+    # Chunking thresholds
+    MIN_BLOCK_CHARS = 80
+    MAX_BLOCK_CHARS = 900
     
     def __init__(self):
         """Parser'ı başlat."""
@@ -76,28 +83,28 @@ class PDFParser:
             # PDF'i aç
             doc = fitz.open(stream=file_content, filetype="pdf")
             
-            pages: List[ParsedPage] = []
+            blocks: List[ParsedBlock] = []
             
             for page_num in range(len(doc)):
-                # Her sayfayı parse et
+                # Her sayfadaki blokları parse et
                 page = doc[page_num]
-                parsed_page = self._parse_page(page, page_num + 1)
-                pages.append(parsed_page)
+                page_blocks = self._parse_page_blocks(page, page_num + 1)
+                blocks.extend(page_blocks)
             
             doc.close()
             
             return ParseResult(
                 success=True,
-                pages=pages,
-                total_pages=len(pages),
+                blocks=blocks,
+                total_blocks=len(blocks),
                 error_message=None
             )
             
         except Exception as e:
             return ParseResult(
                 success=False,
-                pages=[],
-                total_pages=0,
+                blocks=[],
+                total_blocks=0,
                 error_message=str(e)
             )
     
@@ -118,196 +125,146 @@ class PDFParser:
         except Exception as e:
             return ParseResult(
                 success=False,
-                pages=[],
-                total_pages=0,
+                blocks=[],
+                total_blocks=0,
                 error_message=f"Dosya okunamadı: {str(e)}"
             )
     
-    def _parse_page(self, page: fitz.Page, page_number: int) -> ParsedPage:
+    def _parse_page_blocks(self, page: fitz.Page, page_number: int) -> List[ParsedBlock]:
         """
-        Tek bir sayfayı parse et.
+        Tek bir sayfadaki text block'ları parse et ve semantic chunk'lara dönüştür.
         
         Args:
             page: PyMuPDF Page objesi
             page_number: Sayfa numarası (1'den başlar)
             
         Returns:
-            ParsedPage: Parse edilmiş sayfa
+            List[ParsedBlock]: Parse edilmiş bloklar
         """
-        # Text blocks'ları al (formatting bilgisiyle)
-        blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
-        
-        html_parts: List[str] = []
-        plain_text_parts: List[str] = []
-        
+        raw_blocks = page.get_text("blocks")
+
+        normalized_blocks: List[str] = []
+        for block in raw_blocks:
+            if len(block) < 5:
+                continue
+            text = str(block[4]).strip()
+            if not text:
+                continue
+            text = self._normalize_text(text)
+            if text:
+                normalized_blocks.append(text)
+
+        semantic_chunks = self._build_semantic_chunks(normalized_blocks)
+
+        parsed_blocks: List[ParsedBlock] = []
+        for block_index, chunk in enumerate(semantic_chunks):
+            parsed_blocks.append(
+                ParsedBlock(
+                    page_number=page_number,
+                    block_index=block_index,
+                    content=chunk,
+                    word_count=len(chunk.split()),
+                    char_count=len(chunk),
+                )
+            )
+
+        return parsed_blocks
+
+    def _normalize_text(self, text: str) -> str:
+        """Block metnini normalize et."""
+        text = text.replace("\r", "\n")
+        text = re.sub(r"-\n", "", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = re.sub(r"[ \t]+", " ", text)
+        return text.strip()
+
+    def _build_semantic_chunks(self, blocks: List[str]) -> List[str]:
+        """
+        Raw block listesini anlamsal bütünlüğü koruyarak chunk'lara dönüştür.
+
+        Kurallar:
+        - Çok kısa bloklar komşu bloklarla birleştirilir.
+        - Maksimum karakter sınırı aşılırsa yeni chunk açılır.
+        """
+        if not blocks:
+            return []
+
+        chunks: List[str] = []
+        current = ""
+
         for block in blocks:
-            # Sadece text block'ları işle (image block'ları atla)
-            if block.get("type") != 0:  # 0 = text, 1 = image
+            candidate = f"{current}\n\n{block}".strip() if current else block
+
+            if len(candidate) <= self.MAX_BLOCK_CHARS:
+                current = candidate
                 continue
-            
-            block_html = self._process_block(block)
-            if block_html:
-                html_parts.append(block_html)
-                # Plain text (word count için)
-                plain_text = self._strip_html(block_html)
-                plain_text_parts.append(plain_text)
-        
-        # HTML içeriği birleştir
-        content = "\n".join(html_parts)
-        
-        # Temizlik
-        content = self._clean_html(content)
-        
-        # Plain text (metrics için)
-        plain_text = " ".join(plain_text_parts)
-        word_count = len(plain_text.split())
-        char_count = len(plain_text)
-        
-        return ParsedPage(
-            page_number=page_number,
-            content=content,
-            word_count=word_count,
-            char_count=char_count
-        )
-    
-    def _process_block(self, block: dict) -> Optional[str]:
-        """
-        Text block'u HTML'e çevir.
-        
-        Block yapısı:
-        {
-            "lines": [
-                {
-                    "spans": [
-                        {"text": "Hello", "size": 12, "flags": 0, "font": "Arial"}
-                    ]
-                }
-            ]
-        }
-        """
-        lines = block.get("lines", [])
-        if not lines:
-            return None
-        
-        # Block'taki dominant font size'ı bul (başlık mı?)
-        all_spans = []
-        for line in lines:
-            all_spans.extend(line.get("spans", []))
-        
-        if not all_spans:
-            return None
-        
-        # Ortalama font size
-        avg_size = sum(s.get("size", 12) for s in all_spans) / len(all_spans)
-        
-        # Tag belirle
-        tag = self._get_tag_for_size(avg_size)
-        
-        # Lines'ları işle
-        line_texts: List[str] = []
-        
-        for line in lines:
-            line_html = self._process_line(line)
-            if line_html:
-                line_texts.append(line_html)
-        
-        if not line_texts:
-            return None
-        
-        # Satırları birleştir
-        text = " ".join(line_texts)
-        
-        # Hyphenation fix (satır sonundaki - işaretleri)
-        text = re.sub(r'(\w)-\s+(\w)', r'\1\2', text)
-        
-        # Tag ile wrap et
-        return f"<{tag}>{text}</{tag}>"
-    
-    def _process_line(self, line: dict) -> Optional[str]:
-        """
-        Tek satırı HTML'e çevir.
-        Span'lardaki formatting'i korur (bold, italic).
-        """
-        spans = line.get("spans", [])
-        if not spans:
-            return None
-        
-        parts: List[str] = []
-        
-        for span in spans:
-            text = span.get("text", "")
-            if not text or text.isspace():
-                parts.append(" ")
+
+            if current:
+                chunks.append(current.strip())
+                current = ""
+
+            # Tek blok çok uzunsa paragraf/satır kırılımlarından böl
+            if len(block) > self.MAX_BLOCK_CHARS:
+                split_blocks = self._split_long_block(block)
+                chunks.extend(split_blocks[:-1])
+                current = split_blocks[-1] if split_blocks else ""
+            else:
+                current = block
+
+            if current and len(current) >= self.MIN_BLOCK_CHARS:
                 continue
-            
-            # HTML escape
-            text = html.escape(text)
-            
-            # Font flags
-            flags = span.get("flags", 0)
-            
-            # Bold check (flags bit 4)
-            is_bold = bool(flags & 2 ** 4)
-            
-            # Italic check (flags bit 1)
-            is_italic = bool(flags & 2 ** 1)
-            
-            # Formatting uygula
-            if is_bold and is_italic:
-                text = f"<strong><em>{text}</em></strong>"
-            elif is_bold:
-                text = f"<strong>{text}</strong>"
-            elif is_italic:
-                text = f"<em>{text}</em>"
-            
-            parts.append(text)
-        
-        return "".join(parts)
-    
-    def _get_tag_for_size(self, font_size: float) -> str:
-        """
-        Font size'a göre HTML tag belirle.
-        
-        Args:
-            font_size: Font boyutu (pt)
-            
-        Returns:
-            str: HTML tag (h1, h2, h3, p)
-        """
-        if font_size >= self.H1_MIN_SIZE:
-            return "h1"
-        elif font_size >= self.H2_MIN_SIZE:
-            return "h2"
-        elif font_size >= self.H3_MIN_SIZE:
-            return "h3"
-        else:
-            return "p"
-    
-    def _clean_html(self, html_content: str) -> str:
-        """
-        HTML içeriği temizle ve düzenle.
-        
-        - Fazla boşlukları kaldır
-        - Boş tag'leri kaldır
-        - Art arda gelen aynı tag'leri birleştir
-        """
-        # Fazla whitespace temizliği
-        html_content = re.sub(r'\s+', ' ', html_content)
-        
-        # Boş paragrafları kaldır
-        html_content = re.sub(r'<p>\s*</p>', '', html_content)
-        html_content = re.sub(r'<h[1-3]>\s*</h[1-3]>', '', html_content)
-        
-        # Tag'ler arasındaki boşlukları düzenle
-        html_content = re.sub(r'>\s+<', '>\n<', html_content)
-        
-        return html_content.strip()
-    
-    def _strip_html(self, html_content: str) -> str:
-        """HTML tag'lerini kaldır, plain text döndür."""
-        clean = re.sub(r'<[^>]+>', ' ', html_content)
-        clean = re.sub(r'\s+', ' ', clean)
-        return clean.strip()
+
+        if current:
+            # Son chunk çok kısaysa bir öncekiyle birleştir
+            if chunks and len(current) < self.MIN_BLOCK_CHARS:
+                merged = f"{chunks[-1]}\n\n{current}".strip()
+                if len(merged) <= self.MAX_BLOCK_CHARS:
+                    chunks[-1] = merged
+                else:
+                    chunks.append(current.strip())
+            else:
+                chunks.append(current.strip())
+
+        return [chunk for chunk in chunks if chunk]
+
+    def _split_long_block(self, block: str) -> List[str]:
+        """Uzun bir bloğu cümle/paragraf düzeyinde güvenli boyutlara böl."""
+        paragraphs = [p.strip() for p in re.split(r"\n\n+", block) if p.strip()]
+        if not paragraphs:
+            return [block[: self.MAX_BLOCK_CHARS].strip()]
+
+        out: List[str] = []
+        current = ""
+
+        for paragraph in paragraphs:
+            candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
+            if len(candidate) <= self.MAX_BLOCK_CHARS:
+                current = candidate
+                continue
+
+            if current:
+                out.append(current.strip())
+
+            if len(paragraph) <= self.MAX_BLOCK_CHARS:
+                current = paragraph
+                continue
+
+            sentence_parts = re.split(r"(?<=[.!?])\s+", paragraph)
+            temp = ""
+            for sentence in sentence_parts:
+                candidate_sentence = f"{temp} {sentence}".strip() if temp else sentence
+                if len(candidate_sentence) <= self.MAX_BLOCK_CHARS:
+                    temp = candidate_sentence
+                else:
+                    if temp:
+                        out.append(temp.strip())
+                    temp = sentence[: self.MAX_BLOCK_CHARS].strip()
+            current = temp
+
+        if current:
+            out.append(current.strip())
+
+        return out
 
 
 # Singleton instance

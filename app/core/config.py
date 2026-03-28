@@ -39,6 +39,20 @@ class Settings(BaseSettings):
     PDF_HEADING_H1_SIZE: float = 18.0
     PDF_HEADING_H2_SIZE: float = 14.0
     PDF_HEADING_H3_SIZE: float = 12.0
+
+    # Vector DB (Qdrant)
+    QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_API_KEY: str = ""
+    QDRANT_COLLECTION_NAME: str = "ebook_blocks"
+
+    # Embeddings
+    EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
+
+    # Gemini
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-1.5-flash"
+    GEMINI_TEMPERATURE: float = 0.2
+    GEMINI_MAX_TOKENS: int = 2048
     
     class Config:
         env_file = ".env"

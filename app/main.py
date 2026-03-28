@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.books.page_router import router as page_router  
+from app.books.ai_router import router as ai_router
 from app.core.config import settings
 from app.users.router import router as users_router
 from app.books.router import router as books_router
@@ -110,6 +111,12 @@ app.include_router(
     page_router,
     prefix="/api/v1/books",
     tags=["Book Pages"]
+)
+
+app.include_router(
+    ai_router,
+    prefix="/api/v1",
+    tags=["AI"]
 )
 
 

@@ -1,15 +1,4 @@
 services:
-  # PostgreSQL Database
-  - type: pserv
-    name: ebook-db
-    env: docker
-    plan: free
-    region: frankfurt
-    databases:
-      - name: ebook
-        user: ebook_user
-
-  # FastAPI Web Service
   - type: web
     name: ebook-api
     env: python
@@ -20,9 +9,7 @@ services:
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
-        fromDatabase:
-          name: ebook-db
-          property: connectionString
+        value: "postgresql://ebook_user:Rgs7UULeLrFoIrR2th6LttgKhPhtkrNM@dpg-d59rts75r7bs739f8dn0-a.frankfurt-postgres.render.com/ebook_cwfp"
       - key: JWT_SECRET_KEY
         generateValue: true
       - key: JWT_ALGORITHM
