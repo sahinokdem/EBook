@@ -1,20 +1,20 @@
-"""
-Config - Updated.
-
-Yeni ayarlar:
-- Celery (Redis)
-- PDF processing
-"""
-
 from pydantic_settings import BaseSettings
 from functools import lru_cache
-
+from pydantic import field_validator #
 
 class Settings(BaseSettings):
     """Application settings."""
     
     # Database
     DATABASE_URL: str
+
+    # Render/SQLAlchemy Fix: postgres:// -> postgresql://
+    @field_validator("DATABASE_URL", mode="after")
+    @classmethod
+    def fix_database_url(cls, v: str) -> str:
+        if v.startswith("postgres://"):
+            return v.replace("postgres://", "postgresql://", 1)
+        return v
     
     # JWT Authentication
     JWT_SECRET_KEY: str
@@ -32,10 +32,10 @@ class Settings(BaseSettings):
     # Celery / Redis
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
-    USE_CELERY: bool = False  # Development'ta False
+    USE_CELERY: bool = False
     
     # PDF Processing
-    PDF_MAX_PAGES: int = 1000  # Maksimum sayfa limiti
+    PDF_MAX_PAGES: int = 1000
     PDF_HEADING_H1_SIZE: float = 18.0
     PDF_HEADING_H2_SIZE: float = 14.0
     PDF_HEADING_H3_SIZE: float = 12.0
@@ -50,18 +50,16 @@ class Settings(BaseSettings):
 
     # Gemini
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-1.5-flash"
-    GEMINI_TEMPERATURE: float = 0.2
-    GEMINI_MAX_TOKENS: int = 2048
+    GEMINI_MODEL: str = "gemini-3.1-flash-lite-preview" # [cite: 2026-03-28]
+    GEMINI_TEMPERATURE: float = 0.4
+    GEMINI_MAX_TOKENS: int = 8192
     
     class Config:
         env_file = ".env"
         case_sensitive = False
 
-
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
-
 
 settings = get_settings()
